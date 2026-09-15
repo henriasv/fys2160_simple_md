@@ -15,8 +15,22 @@ crystal = FCC(N=500, box=12)
 rectangular = FCC(N=96, box=(6, 9, 12))
 gas = Random(N=500, rho=.03, min_distance=.9)
 
-sim = MDSimulation(gas, temperature=2)
-result = sim.run(steps=5000, storage_name="random-gas")
+sim = MDSimulation(
+    gas,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=5000,
+    sample_every=100,
+    save_every=500,
+    storage_name="random-gas",
+)
 ```
 
 Specify **N and rho**, or **N and box**; specifying both rho and box is an error.
@@ -55,7 +69,16 @@ from fys2160_md import System
 
 pair = System([[4, 5, 5], [5.15, 5, 5]], box=10,
               velocities=[[.1, 0, 0], [-.1, 0, 0]])
-sim = MDSimulation(pair, ensemble="nve")
+sim = MDSimulation(
+    pair,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nve",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
 ```
 
 Inputs are copied. Explicit velocities must have zero total momentum. Diatomic

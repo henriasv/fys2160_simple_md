@@ -18,8 +18,22 @@ The Python import is `fys2160_md`.
 from fys2160_md import FCC, Random, MDSimulation, Run
 
 system = FCC(N=500, rho=0.1)
-sim = MDSimulation(system, temperature=2)
-result = sim.run(steps=10_000, storage_name="argon")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=10_000,
+    sample_every=100,
+    save_every=500,
+    storage_name="argon",
+)
 print(result.thermo.compressibility_factor.mean())
 result.view()  # Interactive replay in a notebook.
 ```
@@ -59,9 +73,23 @@ from fys2160_md import Random, MDSimulation, HarmonicBond
 
 system = Random(N=100, rho=.01, molecule="diatomic",
                 bond=HarmonicBond(length=.7, stiffness=100))
-sim = MDSimulation(system, pair_potential="lj", epsilon=1, sigma=1,
-                   exclude_bonded_pairs=True, temperature=2)
-result = sim.run(steps=5000, storage_name="molecules")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    exclude_bonded_pairs=True,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.002,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=5000,
+    sample_every=100,
+    save_every=500,
+    storage_name="molecules",
+)
 ```
 
 N counts molecules here (200 atoms). Connected partners feel the spring;
@@ -75,9 +103,22 @@ See the [interaction reference](https://henriasv.github.io/fys2160_simple_md/api
 ```python
 system = Random(species={"A": 80, "B": 20}, rho=.02,
                 masses={"A": 1, "B": 4}, min_distance=1.1)
-sim = MDSimulation(system, epsilon={"A": 1, "B": .5},
-                   sigma={"A": 1, "B": 1.2}, temperature=2)
-result = sim.run(steps=3000, storage_name="mixture")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon={"A": 1, "B": .5},
+    sigma={"A": 1, "B": 1.2},
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=3000,
+    sample_every=100,
+    save_every=500,
+    storage_name="mixture",
+)
 ```
 
 All species share fixed LJ reference units. Unlike pairs use the explicitly

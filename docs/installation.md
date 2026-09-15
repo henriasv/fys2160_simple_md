@@ -23,8 +23,22 @@ import matplotlib.pyplot as plt
 from fys2160_md import FCC, MDSimulation
 
 system = FCC(N=108, rho=.1)
-sim = MDSimulation(system, temperature=2)
-result = sim.run(steps=1000, storage_name="first-run")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=1000,
+    sample_every=100,
+    save_every=500,
+    storage_name="first-run",
+)
 data = result.thermo
 plt.figure(figsize=(8, 5))
 plt.subplot(2, 1, 1)
@@ -38,6 +52,9 @@ plt.tight_layout()
 plt.show()
 result.view()
 ```
+
+`timestep` sets the integration step; `sample_every` and `save_every` set output
+intervals in MD steps. All main settings are explicit so you can edit them.
 
 `show=True` needs the notebook extras and a working widget renderer. The 3D
 viewer needs WebGL 2 / graphics acceleration. Restart the kernel after updating

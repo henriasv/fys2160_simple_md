@@ -1,8 +1,29 @@
 # Examples
 
-The [executed notebook](notebook.md) shows a vibrating crystal and a dilute gas,
+The [executed notebook](notebook.md) shows a crystal, a gas, a mixture and bonded molecules,
 with recorded plots and working particle replays. These are standalone examples
 of the interface, not worked course exercises.
+
+## Settings to change
+
+Each complete example writes out the standard physical and recording settings.
+They are the starting point for students to edit, even when they match the defaults.
+All values use the same LJ reduced reference units.
+
+| Setting | Meaning |
+|---|---|
+| `ensemble="nvt"`, `temperature=2` | Fixed volume, thermostat target T = 2 |
+| `timestep=0.005` | Integration step for atomic examples; molecules use 0.002 |
+| `cutoff=2.5` | Pair-interaction range in reference length units |
+| `steps=10_000` | Number of integration steps; at timestep 0.005 this is time 50 |
+| `sample_every=100` | Record thermodynamic data every 100 MD steps |
+| `save_every=500` | Save particle coordinates every 500 MD steps for replay |
+| `storage_name="gas"` | Saved run folder; using the name again replaces its contents |
+
+`sample_every` and `save_every` control output, not the integration timestep.
+Repeated `sim.run(...)` calls continue the same simulation and retain its physical
+settings. Thermostat coupling (`friction=1`), random seed (`seed=87287`) and other
+controls are described in the [API reference](../api/simulation.md).
 
 ## Pressure of a gas
 
@@ -11,9 +32,28 @@ import matplotlib.pyplot as plt
 from fys2160_md import FCC, Random, MDSimulation
 
 system = Random(N=500, rho=.01)
-sim = MDSimulation(system, temperature=2, storage_name="gas")
-sim.run(steps=10_000)           # Equilibrate.
-result = sim.run(steps=10_000)  # Replace with the measurement run.
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+    storage_name="gas",
+)
+# Equilibrate, then record a measurement run under the same conditions.
+sim.run(
+    steps=10_000,
+    sample_every=100,
+    save_every=500,
+)
+result = sim.run(
+    steps=10_000,
+    sample_every=100,
+    save_every=500,
+)  # The same storage name replaces the equilibration output.
 print(result.thermo.compressibility_factor.mean())
 data = result.thermo
 plt.figure(figsize=(8, 5))
@@ -35,9 +75,23 @@ time to equilibrate before interpreting a mean.
 
 ```python
 system = FCC(N=256, rho=.1)
-sim = MDSimulation(system, temperature=1)
-result = sim.run(steps=1000, ensemble="nve", heat_rate=1,
-                        storage_name="warming")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nve",
+    temperature=1,
+    timestep=0.005,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=1000,
+    heat_rate=1,
+    sample_every=100,
+    save_every=500,
+    storage_name="warming",
+)
 data = result.thermo
 plt.plot(data.time, data.temperature)
 plt.xlabel("Time")
@@ -55,9 +109,23 @@ from fys2160_md import Random, MDSimulation, HarmonicBond, RigidBond
 
 system = Random(N=100, rho=.01, molecule="diatomic",
                 bond=HarmonicBond(length=.7, stiffness=100))
-sim = MDSimulation(system, pair_potential="lj", epsilon=1, sigma=1,
-                   exclude_bonded_pairs=True, temperature=2)
-result = sim.run(steps=5000, storage_name="molecules")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    exclude_bonded_pairs=True,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.002,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=5000,
+    sample_every=100,
+    save_every=500,
+    storage_name="molecules",
+)
 result.view(projection="perspective")
 ```
 
@@ -73,9 +141,23 @@ a stiffer spring may need a smaller timestep. See [Bonds and interactions](../ap
 
 ```python
 system = FCC(N=500, rho=.005)
-sim = MDSimulation(system, temperature=2, ensemble="npt", pressure=.01,
-                 storage_name="pressure-control")
-result = sim.run(steps=10_000)
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="npt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+    pressure=.01,
+    storage_name="pressure-control",
+)
+result = sim.run(
+    steps=10_000,
+    sample_every=100,
+    save_every=500,
+)
 data = result.thermo
 plt.figure(figsize=(8, 5))
 plt.subplot(2, 1, 1)
@@ -125,9 +207,17 @@ sim = MDSimulation(
     epsilon={"A": 1, "B": .5},
     sigma={"A": 1, "B": 1.2},
     mixing_rule="lorentz-berthelot",
+    ensemble="nvt",
     temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
 )
-mixture = sim.run(steps=3000, save_every=30, storage_name="mixture")
+mixture = sim.run(
+    steps=3000,
+    sample_every=100,
+    save_every=30,
+    storage_name="mixture",
+)
 mixture.view(max_frames=101, projection="perspective")
 ```
 

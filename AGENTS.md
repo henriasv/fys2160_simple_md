@@ -8,6 +8,8 @@ This repository contains the standalone course MD package. Python import:
 - Shared live/saved WebGL renderer: `viewer.js`.
 - Docs: `docs/`, `mkdocs.yml`; static executed notebook built by
   `scripts/build_docs.py`. GitHub Actions publishes Pages on main.
+- Surface ensemble, temperature, timestep, pair parameters, cutoff, step count and
+  recording intervals in complete examples, even when they match defaults.
 - Keep student examples short: no block averaging or run/fit wrapper functions.
 - Reusing storage_name intentionally overwrites a recognized saved run.
 - Exact cubic FCC counts N=4n³; reject invalid counts with suggestions.
@@ -44,3 +46,8 @@ notebook now includes mixture and bonded demonstrations plus direct pyplot.
 37 tests pass, including mixture forces, mass acceleration, equipartition and
 checkpoint restoration. Historical lab files were removed with targeted filtering;
 private bundle backups are in the teaching repository's .git/md-history-backups.
+
+2026-09-15: Standard simulation parameters are explicit in the recorded notebook,
+recipes, installation, overview, geometry examples and README. Brief explanations
+distinguish integration timestep, total duration and output intervals. Numerical
+values and package defaults are unchanged.

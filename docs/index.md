@@ -16,8 +16,22 @@ a few Python lines define the experiment.
 from fys2160_md import FCC, MDSimulation
 
 system = FCC(N=500, rho=0.1)
-sim = MDSimulation(system, temperature=2)
-result = sim.run(steps=10_000, storage_name="gas")
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=10_000,
+    sample_every=100,
+    save_every=500,
+    storage_name="gas",
+)
 result.view()
 ```
 
