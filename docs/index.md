@@ -13,14 +13,15 @@ a few Python lines define the experiment.
 ## Three steps to an experiment
 
 ```python
-from fys2160_md import FCC, Simulation
+from fys2160_md import FCC, MDSimulation
 
-system = FCC(N=500, rho=0.1, temperature=2)
-result = Simulation.run(system, steps=10_000, storage_name="gas")
+system = FCC(N=500, rho=0.1)
+sim = MDSimulation(system, temperature=2)
+result = sim.run(steps=10_000, storage_name="gas")
 result.view()
 ```
 
-`System` holds the box and atoms. `Simulation.run` advances it. `Run` reads,
+`System` holds the box and atoms. `MDSimulation(system, ...)` owns and evolves a copy. `Run` reads,
 plots and replays the recorded result—even in a later Python session.
 
 <div class="grid cards" markdown>

@@ -1,20 +1,22 @@
 # Build a system
 
-Geometry belongs to a `System`; the solver receives that system explicitly.
+Geometry belongs to a `System`. `MDSimulation(system, ...)` copies it and manages
+the experiment; `sim.run(...)` continues that experiment.
 All boxes are periodic in three dimensions. A scalar `box` means a cube side
 length; a triple specifies rectangular side lengths.
 
 ## Density or box size
 
 ```python
-from fys2160_md import FCC, Random, Simulation
+from fys2160_md import FCC, Random, MDSimulation, RigidBond
 
 crystal = FCC(N=500, rho=.8)
 crystal = FCC(N=500, box=12)
 rectangular = FCC(N=96, box=(6, 9, 12))
 gas = Random(N=500, rho=.03, min_distance=.9)
 
-result = Simulation.run(gas, steps=5000, storage_name="random-gas")
+sim = MDSimulation(gas, temperature=2)
+result = sim.run(steps=5000, storage_name="random-gas")
 ```
 
 Specify **N and rho**, or **N and box**; specifying both rho and box is an error.
@@ -28,10 +30,10 @@ randomly removes lattice sites. Rectangular boxes must contain whole conventiona
 cells with the same lattice constant in all directions.
 
 For diatomics, N counts **molecules**, rho is their number density, and FCC
-sites locate the molecular centres. Partners start 0.7σ apart with random orientations.
+sites locate the molecular centres. Partners start at the specified bond length with random orientations.
 
 ```python
-molecules = FCC(N=500, rho=.01, model="diatomic-rigid", temperature=2)
+molecules = FCC(N=500, rho=.01, molecule="diatomic", bond=RigidBond(length=.7))
 ```
 
 ## Random: no close starting pairs
@@ -52,7 +54,8 @@ Use FCC for a dense crystal. Reusing the seed reproduces the initial state.
 from fys2160_md import System
 
 pair = System([[4, 5, 5], [5.15, 5, 5]], box=10,
-              velocities=[[.1, 0, 0], [-.1, 0, 0]], ensemble="nve")
+              velocities=[[.1, 0, 0], [-.1, 0, 0]])
+sim = MDSimulation(pair, ensemble="nve")
 ```
 
 Inputs are copied. Explicit velocities must have zero total momentum. Diatomic

@@ -8,4 +8,4 @@
 .hero h1 { margin: .4rem 0 .6rem; font-size: 2rem; }
 .hero p { max-width: 34rem; }
 .md-typeset .grid.cards>ul>li { border-radius: .5rem; }
-.notebook-frame { width:100%; height:76vh; min-height:600px; border:1px solid #d7e3df; border-radius:.5rem; background:white; }
+.notebook-frame { width:100%; height:600px; min-height:0; border:1px solid #d7e3df; border-radius:.5rem; background:white; }

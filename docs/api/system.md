@@ -4,84 +4,83 @@
 from fys2160_md import System, FCC, Random
 ```
 
+A `System` describes the physical particles and box. It has no timestep,
+thermostat, clock or output folder. `MDSimulation(system, ...)` takes a copy and
+manages the experiment; the evolving state is available as `sim.system`.
+
 ## FCC
 
 ```python
-FCC(*, N=500, rho=None, box=None, model="atomic", seed=87287, **settings)
+FCC(*, N=500, rho=None, box=None, molecule=None, bond=None, model=None, seed=87287)
 ```
 
-Returns a `System` with a complete periodic FCC lattice. Default: cubic box at
-rho = 0.001. Supply either rho or box; N counts atoms or molecules according to model.
-Cubes require N=4n³. Rectangular boxes require commensurate whole conventional cells.
+Returns a `System` with a complete periodic FCC lattice and velocities not yet
+assigned. Default: cubic box at rho = 0.001. Supply either rho or box; N counts
+atoms or molecules according to molecule. Cubes require N=4n³; rectangular boxes
+require commensurate whole conventional cells. `seed` controls molecular orientations.
 
 ## Random
 
 ```python
 Random(*, N=500, rho=None, box=None, min_distance=.9,
-       max_attempts=1000, model="atomic", seed=87287, **settings)
+       max_attempts=1000, molecule=None, bond=None, model=None, seed=87287)
 ```
 
-Returns a `System` with self-avoiding random placement. Minimum-image distances
-between atoms of distinct particles must be at least `min_distance`. The bond
-inside a diatomic molecule is exempt. `max_attempts` limits trials **per particle**;
-unable-to-pack requests raise `ValueError`.
+Returns a `System` with self-avoiding random positions and velocities not yet
+assigned. Minimum-image distances between atoms of distinct particles are at
+least `min_distance`. Partners in a molecule are exempt. `max_attempts` limits
+trials **per particle**; unable-to-pack requests raise `ValueError`. The seed
+controls placement and molecular orientations, independently of the simulation seed.
 
-## System
+## Explicit System
 
 ```python
-System(positions, box, *, velocities=None, masses=None, model="atomic",
-       temperature=2., ensemble="nvt", timestep=None, cutoff=2.5,
-       skin=.4, friction=1., pressure=.01, pressure_time=5.,
-       heat_rate=0., seed=87287, output_dir="runs", storage_name="simulation")
+System(positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None)
 ```
 
-Explicit positions are an (number of atoms, 3) array; box is a scalar or length-3
-array. Velocities have the same shape. Masses are a positive per-atom array.
-Inputs are copied and positions are wrapped into the periodic box. If velocities
-are omitted, they are generated with zero centre-of-mass momentum and scaled to
-the initial temperature. Diatomic models currently require equal atom masses.
+Positions are a (number of atoms, 3) array; box is a scalar or length-3 array.
+Optional velocities have the same shape. Masses are a positive per-atom array,
+defaulting to one. Inputs are copied, and positions wrap into the periodic box.
+Use `molecule="diatomic"` with a `HarmonicBond` or `RigidBond`.
+The default is unbonded atoms; diatomics default to `HarmonicBond()` if bond is omitted.
 
-`FCC` and `Random` accept these initial physical/storage settings as keyword arguments.
+For diatomics, partners are consecutive and atom masses must be equal. Rigid
+bonds must have their specified length; supplied velocities must be tangent to those bonds.
+The solver requires zero total momentum when explicit velocities are supplied.
 
-| Setting | Meaning |
-|---|---|
-| `model` | `atomic`, `diatomic-flexible`, or `diatomic-rigid` |
-| `temperature` | Initial temperature and initial thermostat target, in reduced units |
-| `ensemble` | `nve`, `nvt`, or atomic-only `nph` / `npt` |
-| `timestep` | Defaults to 0.005 for atoms, 0.002 for molecules |
-| `cutoff`, `skin` | Interaction cutoff and Verlet neighbor-list skin, in σ |
-| `friction` | Langevin friction, inverse reduced time |
-| `pressure`, `pressure_time` | Target pressure and barostat time scale |
-| `heat_rate` | Total energy added per reduced time; default zero |
-| `seed` | Integer from 1 through 2⁶⁴−1 |
-| `output_dir` | Parent folder for saved runs |
-| `storage_name` | Default run folder name; reuse replaces previous contents |
+```python
+system = System([[4, 5, 5], [5.15, 5, 5]], box=10,
+                velocities=[[.1, 0, 0], [-.1, 0, 0]])
+```
+
+If velocities are `None`, MDSimulation initializes them at its requested temperature.
+If supplied, they are **preserved**; the simulation's temperature argument then
+sets the thermostat target, not an immediate velocity reset.
 
 ### Read the state
 
 | Attribute | Result |
 |---|---|
+| `system.molecule` | None for atoms, `"diatomic"` for molecules |
+| `system.bond` | Immutable bond settings, or None |
+| `system.bonds` | Read-only (number of bonds, 2) array of connected atom indices |
+| `system.model` | Legacy label (`atomic`, `diatomic-flexible`, `diatomic-rigid`) |
 | `system.N` | Number of atoms, or molecules for diatomics |
 | `system.rho` | Current N / volume |
 | `system.box.lengths`, `.volume` | Box lengths and volume |
-| `system.atoms.positions`, `.velocities`, `.masses` | Read-only array snapshots |
+| `system.atoms.positions`, `.masses` | Read-only array snapshots |
+| `system.atoms.velocities` | Read-only snapshot, or None before velocities are assigned |
 | `system.atoms.molecule_ids` | IDs identifying molecular partners |
-| `system.forces` | Read-only force array snapshot |
-| `system.step`, `.time` | Cumulative step and reduced time |
-| `system.settings` | Copy of current ensemble, dt, targets and heat rate |
-| `system.observables` | Current temperature, pressure, energy and other recorded quantities |
-| `system.dof` | Active kinetic degrees of freedom, with COM/rigid constraints removed |
+| `system.dof` | Kinetic degrees of freedom with COM/rigid constraints removed |
+| `system.copy()` | Independent copy of the physical state |
 
-Array snapshots are not handles for editing the running system. Construct a new
-`System` to specify different coordinates or velocities.
+Array snapshots do not let you edit the running simulation. Construct a new
+System to specify different coordinates or velocities. The explicit-array
+convenience `System.from_arrays(positions, velocities, box, ...)` is also available.
 
-### Load a checkpoint
+Clock, forces, measured observables, experiment settings and checkpoint restart
+belong to [MDSimulation](simulation.md).
 
-```python
-system = System.from_run("runs/gas")
-# Or: System.from_arrays(positions, velocities, box, masses=None, model="atomic", ...)
-```
-
-`from_run` restores the final checkpoint of a completed or interrupted run,
-including velocities, box, time, random state and barostat state. Failed runs
-cannot be resumed. `output_dir=` optionally changes the destination directory.
+The legacy `model=` argument is retained for old code. `diatomic-flexible` selects
+the old `Class2Bond`, and `diatomic-rigid` selects `RigidBond()`. Do not combine
+`model=` and `molecule=`. New code should name the bond explicitly.

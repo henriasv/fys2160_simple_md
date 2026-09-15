@@ -68,4 +68,7 @@ const second=sandbox.createMDView(host,{frames:[expanded],projection:'orthograph
 assert.equal(images[0][2],original[0][2]/2); // Same N, 8x lower density: half the projected radius.
 assert.equal(original[0][2],30); // Diameter sigma=1 at 300/10 pixels per sigma.
 second.dispose();
+const larger=sandbox.createMDView(host,{frames:[frame],sigma:1.5,projection:'orthographic',zoom:1,live:true,note:''});
+assert.equal(images[0][2],original[0][2]*1.5);
+larger.dispose();
 console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, sizing and cleanup.');

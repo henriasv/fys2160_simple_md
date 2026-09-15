@@ -1,7 +1,7 @@
 # Saved Run
 
 ```python
-from fys2160_md import Run, System, Simulation
+from fys2160_md import Run, System, MDSimulation
 saved = Run.load("runs/gas")
 ```
 
@@ -16,7 +16,6 @@ Loading a run reads files and does **not** start a simulation.
 | `run.thermo` | Pandas DataFrame read from thermo.csv |
 | `run.iter_frames()` | Stream saved frame dictionaries one at a time |
 | `run.load_frames()` | Stack all frames in memory; raises if none were saved |
-| `run.plot(*quantities, x="time")` | Matplotlib figure with one panel per quantity |
 | `run.view(...)` | Self-contained HTML trajectory player for notebook output |
 
 ## Replay
@@ -61,9 +60,31 @@ Frame arrays include positions, unwrapped coordinates, velocities, box, step and
 time. A final checkpoint is kept even when `save_every=None`.
 
 ```python
-system = System.from_run(saved)
-continued = Simulation.run(system, steps=1000, storage_name="continued")
+sim = MDSimulation.from_run(saved)
+continued = sim.run(steps=1000, storage_name="continued")
 ```
 
 A `Run` refers to a directory, not an immutable copy. Replacing that storage name
 also changes what previously created Run objects read.
+
+## Plot the recorded data
+
+```python
+import matplotlib.pyplot as plt
+
+result = Run.load("runs/gas")
+data = result.thermo
+plt.figure(figsize=(8, 5))
+plt.subplot(2, 1, 1)
+plt.plot(data.time, data.temperature)
+plt.ylabel("Temperature")
+plt.subplot(2, 1, 2)
+plt.plot(data.time, data.pressure)
+plt.ylabel("Pressure")
+plt.xlabel("Time")
+plt.tight_layout()
+plt.show()
+```
+
+`thermo` is a pandas DataFrame: read columns, calculate means and use ordinary
+NumPy, pandas and Matplotlib tools for your analysis.

@@ -55,18 +55,62 @@ class GeometryTests(unittest.TestCase):
         self.assertGreaterEqual(d.min(),.9)
         self.assertEqual(s.N,32);self.assertEqual(len(s.atoms),64)
 
-    def test_runner_advances_only_given_system_and_resumes_geometry(self):
+    def test_simulations_copy_the_same_starting_system_and_resume(self):
         with tempfile.TemporaryDirectory() as folder:
-            a=Random(N=32,box=[8,9,10],output_dir=folder)
-            b=FCC(N=32,box=10)
+            system=Random(N=32,box=[8,9,10])
+            initial=system.atoms.positions.copy()
+            a=Simulation(system,temperature=1.,output_dir=folder)
+            b=Simulation(system,temperature=3.,output_dir=folder)
             untouched=b.atoms.positions.copy()
-            run=Simulation.run(a,steps=20,storage_name='random')
-            Simulation.run(a,steps=10,storage_name='continued')
+            run=a.run(steps=20,storage_name='random')
+            a.run(steps=10,storage_name='continued')
             self.assertEqual(a.step,30);self.assertEqual(b.step,0)
             np.testing.assert_array_equal(b.atoms.positions,untouched)
-            resumed=System.from_run(run)
+            np.testing.assert_array_equal(system.atoms.positions,initial)
+            self.assertIsNone(system.atoms.velocities)
+            self.assertIsNot(a.system,system)
+            np.testing.assert_array_equal(a.system.atoms.positions,a.atoms.positions)
+            self.assertAlmostEqual(b.observables['temperature'],3.)
+            resumed=Simulation.from_run(run)
             self.assertEqual(resumed.step,20)
-            np.testing.assert_array_equal(resumed.box.lengths,[8,9,10])
-            Simulation.run(resumed,steps=10,storage_name='resumed')
-            np.testing.assert_array_equal(resumed.atoms.positions,a.atoms.positions)
-            with self.assertRaises(TypeError):Simulation.run(None,steps=1)
+            np.testing.assert_array_equal(resumed.system.box.lengths,[8,9,10])
+            resumed.run(steps=10,storage_name='resumed')
+            np.testing.assert_array_equal(resumed.system.atoms.positions,a.system.atoms.positions)
+            np.testing.assert_array_equal(resumed.system.atoms.velocities,a.system.atoms.velocities)
+            with self.assertRaises(TypeError):Simulation(None)
+
+    def test_geometry_has_no_protocol_and_does_not_require_solver_box_size(self):
+        tiny=FCC(N=4,rho=1.)
+        self.assertIsNone(tiny.atoms.velocities)
+        self.assertFalse(hasattr(tiny,'run'))
+        self.assertFalse(hasattr(tiny,'settings'))
+        self.assertFalse(hasattr(tiny,'step'))
+        with self.assertRaises(ValueError):Simulation(tiny)
+        Simulation(tiny,cutoff=.5)  # Integration, not geometry, imposes a cutoff.
+        for constructor in (FCC,Random):
+            with self.assertRaises(TypeError):constructor(temperature=2)
+            with self.assertRaises(TypeError):constructor(storage_name='gas')
+
+    def test_explicit_state_is_copied_and_velocities_are_not_reinitialized(self):
+        x=np.array([[4.,5,5],[5.2,5,5]])
+        v=np.array([[.1,0,0],[-.1,0,0]])
+        system=System(x,10,velocities=v)
+        x[:]=0;v[:]=0
+        sim=Simulation(system,temperature=99,ensemble='nve')
+        np.testing.assert_array_equal(sim.atoms.velocities,[[.1,0,0],[-.1,0,0]])
+        sim._advance(5)
+        np.testing.assert_array_equal(system.atoms.positions,[[4,5,5],[5.2,5,5]])
+        np.testing.assert_array_equal(system.atoms.velocities,[[.1,0,0],[-.1,0,0]])
+        snapshot=sim.system.atoms.positions
+        self.assertFalse(snapshot.flags.writeable)
+        snapshot.setflags(write=True);snapshot[:]=0
+        self.assertFalse(np.all(sim.system.atoms.positions==0))
+
+    def test_pressure_control_updates_owned_system_box(self):
+        system=FCC(N=108,rho=.05)
+        original=system.box.lengths.copy()
+        sim=Simulation(system,ensemble='npt',temperature=2,pressure=.2)
+        sim._advance(100)
+        self.assertFalse(np.array_equal(sim.system.box.lengths,original))
+        np.testing.assert_array_equal(system.box.lengths,original)
+        self.assertAlmostEqual(sim.system.rho,sim.observables['density'])

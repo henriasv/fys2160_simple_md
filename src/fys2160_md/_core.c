@@ -62,18 +62,18 @@ static int needs_rebuild(const Neighbors *nb, int n, const double *u,
     }
     return 0;
 }
-/* Atomic: shifted 12-6 LJ; molecular: shifted class2 9-6 LJ.
-   Intramolecular LJ is excluded. Flexible pairs add the class2 bond below. */
+/* Independent nonbonded LJ selection and bonded-pair exclusion.
+   Flexible bonds use a polynomial (including the harmonic special case). */
 static int forces(const Neighbors *nb, int n, const double *x, const double *box,
-                  double cutoff, int model, double *f, double *potential, double *virial) {
+                  double cutoff, int model, int pair, double epsilon, double sigma, int exclude, double length, double k2, double k3, double k4, double *f, double *potential, double *virial) {
     memset(f, 0, (size_t)n * 3 * sizeof(double));
     *potential = 0; *virial = 0;
-    double invc2 = 1 / (cutoff * cutoff), invc6 = invc2 * invc2 * invc2;
-    double shift = model ? 2*pow(invc2,4.5)-3*invc6 : 4*invc6*(invc6-1);
+    double invc2 = sigma*sigma / (cutoff * cutoff), invc6 = invc2 * invc2 * invc2;
+    double shift = epsilon*(pair ? 2*pow(invc2,4.5)-3*invc6 : 4*invc6*(invc6-1));
     double rc2 = cutoff*cutoff;
     for (size_t p = 0; p < nb->size; ++p) {
         int i = nb->pairs[p].i, j = nb->pairs[p].j;
-        if(model && i/2==j/2)continue; /* bonded intramolecular pair excluded */
+        if(model && exclude && i/2==j/2)continue; /* bonded intramolecular pair excluded */
         double dr[3], r2 = 0;
         for (int d = 0; d < 3; ++d) {
             dr[d] = minimum_image(x[3*i+d] - x[3*j+d], box[d]);
@@ -84,15 +84,15 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
             PyErr_SetString(PyExc_ValueError, "Overlapping atoms or unstable trajectory; check positions and timestep.");
             return -1;
         }
-        double inv2 = 1/r2, inv6 = inv2*inv2*inv2;
+        double inv2 = 1/r2, s2 = sigma*sigma*inv2, inv6 = s2*s2*s2;
         double coefficient;
-        if(model) {
+        if(pair) {
             double inv9=inv6*sqrt(inv6);
-            coefficient=18*(inv9-inv6)*inv2;
-            *potential+=2*inv9-3*inv6-shift;
+            coefficient=epsilon*18*(inv9-inv6)*inv2;
+            *potential+=epsilon*(2*inv9-3*inv6)-shift;
         } else {
-            coefficient=24*inv6*(2*inv6-1)*inv2;
-            *potential+=4*inv6*(inv6-1)-shift;
+            coefficient=epsilon*24*inv6*(2*inv6-1)*inv2;
+            *potential+=epsilon*4*inv6*(inv6-1)-shift;
         }
         *virial += coefficient * r2;
         for (int d = 0; d < 3; ++d) {
@@ -103,10 +103,10 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
     if(model==1)for(int i=0;i<n;i+=2) {
         double dr[3],r2=0;
         for(int d=0;d<3;++d){dr[d]=minimum_image(x[3*i+d]-x[3*(i+1)+d],box[d]);r2+=dr[d]*dr[d];}
-        double r=sqrt(r2),q=r-0.7;
+        double r=sqrt(r2),q=r-length;
         if(r<1.e-8){PyErr_SetString(PyExc_ValueError,"Collapsed molecular bond.");return -1;}
-        double coefficient=-(70*q-120*q*q+236*q*q*q)/r;
-        *potential+=35*q*q-40*q*q*q+59*q*q*q*q;
+        double coefficient=-(2*k2*q+3*k3*q*q+4*k4*q*q*q)/r;
+        *potential+=k2*q*q+k3*q*q*q+k4*q*q*q*q;
         *virial+=coefficient*r2;
         for(int d=0;d<3;++d){f[3*i+d]+=coefficient*dr[d];f[3*(i+1)+d]-=coefficient*dr[d];}
     }
@@ -167,7 +167,7 @@ static double constrain_velocities(int n,double *v,const double *x,const double 
 }
 /* RATTLE position constraint: correction along the bond at the start of drift. */
 static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
-                       const double *mass,double dt,double *impulse_virial) {
+                       const double *mass,double dt,double length,double *impulse_virial) {
     for(int i=0;i<n;i+=2) {
         double old[3],trial[3],old2=0,trial2=0,dot=0;
         for(int d=0;d<3;++d){
@@ -175,10 +175,10 @@ static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
             trial[d]=old[d]+dt*(v[3*i+d]-v[3*(i+1)+d]);
             old2+=old[d]*old[d];trial2+=trial[d]*trial[d];dot+=trial[d]*old[d];
         }
-        double discriminant=dot*dot-old2*(trial2-0.49);
+        double discriminant=dot*dot-old2*(trial2-length*length);
         if(discriminant<=0){PyErr_SetString(PyExc_ValueError,"Rigid-bond constraint failed; reduce timestep.");return -1;}
         /* Stable form of the root near zero. */
-        double lambda=-(trial2-0.49)/(dot+sqrt(discriminant));
+        double lambda=-(trial2-length*length)/(dot+sqrt(discriminant));
         double inverse_mass=1/mass[i]+1/mass[i+1];
         *impulse_virial+=lambda*old2/(inverse_mass*dt);
         for(int d=0;d<3;++d){
@@ -191,7 +191,7 @@ static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
 /* Molecular pressure uses COM kinetic energy and intermolecular COM virial.
    It avoids noisy finite-difference constraint-force estimates for rigid bonds. */
 static double molecular_pressure_numerator(const Neighbors *nb,int n,const double *x,
-                 const double *v,const double *mass,const double *box,double cutoff) {
+                 const double *v,const double *mass,const double *box,double cutoff,int pair,double epsilon,double sigma) {
     double value=0;
     for(int i=0;i<n;i+=2)for(int d=0;d<3;++d){
         double momentum=mass[i]*v[3*i+d]+mass[i+1]*v[3*(i+1)+d];
@@ -211,7 +211,8 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
             cm[d]=dr[d]+offset_i-offset_j;
         }
         if(r2>=cutoff*cutoff)continue;
-        double inv2=1/r2,inv6=inv2*inv2*inv2,coef=18*(inv6*sqrt(inv6)-inv6)*inv2;
+        double inv2=1/r2,s2=sigma*sigma*inv2,inv6=s2*s2*s2;
+        double coef=epsilon*(pair ? 18*(inv6*sqrt(inv6)-inv6)*inv2 : 24*inv6*(2*inv6-1)*inv2);
         for(int d=0;d<3;++d)value+=cm[d]*coef*dr[d];
     }
     return value;
@@ -223,12 +224,14 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     Py_buffer buffers[6] = {{0}};
     int requested, done = 0, interrupted = 0;
     double dt, cutoff, skin, T, gamma, heat, targetP, baromass, rate, potential=0, virial=0;
-    int model;
+    int model, pair=-1, exclude=1;
+    double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
     Neighbors nb = {0};
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iidddddd", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma)) return NULL;
+    if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
         int flags = PyBUF_C_CONTIGUOUS | PyBUF_FORMAT | (k<5 ? PyBUF_WRITABLE : 0);
         if (PyObject_GetBuffer(objects[k], &buffers[k], flags)<0) goto cleanup;
@@ -257,7 +260,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_SetString(PyExc_ValueError, "Core array buffers must not overlap."); goto cleanup;
         }
     }
-    if (requested<0 || !(dt>0) || !(cutoff>0) || !(skin>0) || T<0 || gamma<0 ||
+    if (!(epsilon>0) || !(sigma>0) || !isfinite(epsilon+sigma) || pair<0 || pair>1 || (exclude!=0 && exclude!=1) || !(length>0) || k2<0 || k4<0 || !isfinite(length+k2+k3+k4) || requested<0 || !(dt>0) || !(cutoff>0) || !(skin>0) || T<0 || gamma<0 ||
         !isfinite(dt+cutoff+skin+T+gamma+heat+targetP+baromass+rate) || model<0 || model>2 ||
         (model && n%2) || (targetP>=0 && (model!=0 || baromass<=0))) {
         PyErr_SetString(PyExc_ValueError, "Invalid integrator parameters."); goto cleanup;
@@ -275,7 +278,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     nb.reference = malloc((size_t)n*3*sizeof(double));
     if(!nb.reference) {PyErr_NoMemory();goto cleanup;}
-    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,f,&potential,&virial)<0) goto cleanup;
+    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,exclude,length,k2,k3,k4,f,&potential,&virial)<0) goto cleanup;
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
     double dof=3*n-3-(model==2?n/2:0), pressure_numerator=0;
     /* Symmetric isotropic pressure-control splitting. rate = d(log L)/dt.
@@ -298,12 +301,12 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         if(gamma>0) {
-            if(model==2){if(rigid_drift(n,x,u,v,box,mass,0.5*dt,&constraint_impulse)<0)goto cleanup;}
+            if(model==2){if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,&constraint_impulse)<0)goto cleanup;}
             else if(drift(n,x,u,v,box,0.5*dt)<0)goto cleanup;
             thermostat(n,v,mass,T,gamma,dt,&rng);
-            if(model==2){constrain_velocities(n,v,x,box,mass);if(rigid_drift(n,x,u,v,box,mass,0.5*dt,&constraint_impulse)<0)goto cleanup;}
+            if(model==2){constrain_velocities(n,v,x,box,mass);if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,&constraint_impulse)<0)goto cleanup;}
             else if(drift(n,x,u,v,box,0.5*dt)<0)goto cleanup;
-        } else if(model==2){if(rigid_drift(n,x,u,v,box,mass,dt,&constraint_impulse)<0)goto cleanup;}
+        } else if(model==2){if(rigid_drift(n,x,u,v,box,mass,dt,length,&constraint_impulse)<0)goto cleanup;}
         else if(drift(n,x,u,v,box,dt)<0)goto cleanup;
         if(targetP>=0){
             double factor=exp(0.5*dt*rate);
@@ -311,7 +314,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         if(needs_rebuild(&nb,n,u,box,cutoff,skin) && build_neighbors(&nb,n,x,u,box,cutoff+skin)<0)goto cleanup;
-        if(forces(&nb,n,x,box,cutoff,model,f,&potential,&virial)<0)goto cleanup;
+        if(forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,exclude,length,k2,k3,k4,f,&potential,&virial)<0)goto cleanup;
         kick(n,v,f,mass,0.5*dt);
         if(model==2)constrain_velocities(n,v,x,box,mass);
         if(targetP>=0){
@@ -332,7 +335,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_Clear(); interrupted=1; break;
         }
     }
-    pressure_numerator=model?molecular_pressure_numerator(&nb,n,x,v,mass,box,cutoff):2*kinetic(n,v,mass)+virial;
+    pressure_numerator=model?molecular_pressure_numerator(&nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma):2*kinetic(n,v,mass)+virial;
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
 
 cleanup:

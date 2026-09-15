@@ -49,7 +49,7 @@ const positions=f.x.map(p=>cameraPosition(normalize(p,f.box)));
 if(data.molecular)for(let i=0;i+1<positions.length;i+=2){
   if(f.x[i].every((v,d)=>Math.abs(v-f.x[i+1][d])<.5*f.box[d]))bonds.push(positions[i],positions[i+1]);
 }
-renderer.draw({positions,edges,bonds,radius:.5/extent,zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
+renderer.draw({positions,edges,bonds,radius:.5*(data.sigma??1)/extent,zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
 updateLabel(f);}
 function updateLabel(f){
   label.textContent=(state?state+' · ':'')+'Step '+f.step+' · t* '+f.time.toFixed(2)

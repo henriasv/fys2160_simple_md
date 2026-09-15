@@ -1,7 +1,8 @@
 """FYS2160 molecular dynamics: systems, a native C solver and saved runs."""
 from .system import System, Box, Atoms
 from .geometry import FCC, Random
-from .simulation import Simulation
+from .simulation import MDSimulation, Simulation
 from .results import Run
+from .bonds import HarmonicBond, RigidBond, Class2Bond
 __version__ = '0.1.0'
-__all__ = ['Simulation', 'System', 'FCC', 'Random', 'Run', 'Box', 'Atoms']
+__all__ = ['MDSimulation', 'HarmonicBond', 'RigidBond', 'Class2Bond', 'Simulation', 'System', 'FCC', 'Random', 'Run', 'Box', 'Atoms']

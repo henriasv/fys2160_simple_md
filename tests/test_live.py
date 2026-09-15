@@ -48,14 +48,14 @@ class RecordingView(LiveView):
 class LiveTests(unittest.TestCase):
     def test_pacing_keeps_physics_and_recording_independent(self):
         with tempfile.TemporaryDirectory() as root:
-            baseline=FCC(N=32,output_dir=root)
-            a=Simulation.run(baseline,storage_name="baseline",steps=250,sample_every=70,save_every=110)
-            paced=FCC(N=32,output_dir=root)
+            baseline=Simulation(FCC(N=32), output_dir=root)
+            a=baseline.run(storage_name="baseline",steps=250,sample_every=70,save_every=110)
+            paced=Simulation(FCC(N=32), output_dir=root)
             clock=Clock()
             with patch('fys2160_md.visualization.LiveView',RecordingView), \
                  patch('fys2160_md.visualization.time.monotonic',clock.monotonic), \
                  patch('fys2160_md.visualization.time.sleep',clock.sleep):
-                b=Simulation.run(paced,storage_name="paced",steps=250,sample_every=70,save_every=110,
+                b=paced.run(storage_name="paced",steps=250,sample_every=70,save_every=110,
                             show=True,max_fps=5,frame_every=100)
             view=RecordingView.instances[-1]
             self.assertEqual(view.sent_steps,[100,200,250])
@@ -71,34 +71,34 @@ class LiveTests(unittest.TestCase):
 
     def test_full_speed_view_does_not_sleep(self):
         with tempfile.TemporaryDirectory() as root:
-            sim=FCC(N=32,output_dir=root)
+            sim=Simulation(FCC(N=32), output_dir=root)
             clock=Clock()
             with patch('fys2160_md.visualization.LiveView',RecordingView), \
                  patch('fys2160_md.visualization.time.monotonic',clock.monotonic), \
                  patch('fys2160_md.visualization.time.sleep',clock.sleep):
-                Simulation.run(sim,steps=350,show=True)
+                sim.run(steps=350,show=True)
             self.assertEqual(clock.waits,[])
             self.assertEqual(RecordingView.instances[-1].widget.frame['step'],350)
 
     def test_interrupt_during_pacing_saves_the_completed_steps(self):
         with tempfile.TemporaryDirectory() as root:
-            sim=FCC(N=32,output_dir=root)
+            sim=Simulation(FCC(N=32), output_dir=root)
             with patch('fys2160_md.visualization.LiveView',RecordingView), \
                  patch('fys2160_md.visualization.time.sleep',side_effect=KeyboardInterrupt):
-                run=Simulation.run(sim,steps=1000,show=True,max_fps=1,frame_every=30)
+                run=sim.run(steps=1000,show=True,max_fps=1,frame_every=30)
             self.assertEqual(run.metadata['status'],'interrupted')
             self.assertEqual(run.metadata['completed_steps'],30)
             self.assertEqual(RecordingView.instances[-1].widget.status,'interrupted')
             self.assertEqual(RecordingView.instances[-1].widget.frame['step'],30)
             self.assertEqual(int(run.thermo.step.iloc[-1]),30)
-            self.assertEqual(System.from_run(run).step,30)
+            self.assertEqual(Simulation.from_run(run).step,30)
 
     def test_invalid_display_parameters_fail_before_running(self):
         with tempfile.TemporaryDirectory() as root:
-            sim=FCC(N=32,output_dir=root)
+            sim=Simulation(FCC(N=32), output_dir=root)
             for options in ({'max_fps':10}, {'show':True,'max_fps':0},
                             {'show':True,'max_fps':float('nan')}, {'frame_every':0}):
-                with self.assertRaises(ValueError):Simulation.run(sim,**options)
+                with self.assertRaises(ValueError):sim.run(**options)
             self.assertEqual(sim.step,0)
 
 
@@ -106,28 +106,28 @@ class StorageTests(unittest.TestCase):
     def test_reused_name_replaces_all_previous_output(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as root:
-            sim=FCC(N=32,output_dir=root,storage_name='my-gas')
-            first=Simulation.run(sim,steps=500,save_every=50)
+            sim=Simulation(FCC(N=32), output_dir=root, storage_name='my-gas')
+            first=sim.run(steps=500,save_every=50)
             self.assertEqual(len(list(first.iter_frames())),11)
-            second=Simulation.run(sim,steps=10,save_every=None)
+            second=sim.run(steps=10,save_every=None)
             self.assertEqual(first.path,second.path)
             self.assertEqual(second.path,Path(root).resolve()/'my-gas')
             self.assertEqual(list(second.iter_frames()),[])
             self.assertEqual(second.thermo.step.tolist(),[500,510])
-            self.assertEqual(System.from_run(second).step,510)
-            separate=Simulation.run(sim,steps=1,storage_name='other-gas')
+            self.assertEqual(Simulation.from_run(second).step,510)
+            separate=sim.run(steps=1,storage_name='other-gas')
             self.assertNotEqual(separate.path,second.path)
             self.assertEqual(second.thermo.step.tolist(),[500,510])
 
     def test_unrelated_directories_and_links_are_not_overwritten(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as root:
-            sim=FCC(N=32,output_dir=root)
+            sim=Simulation(FCC(N=32), output_dir=root)
             directory=Path(root)/'notes';directory.mkdir()
             (directory/'keep.txt').write_text('Important notes')
-            with self.assertRaises(ValueError):Simulation.run(sim,storage_name='notes')
+            with self.assertRaises(ValueError):sim.run(storage_name='notes')
             self.assertEqual((directory/'keep.txt').read_text(),'Important notes')
             (Path(root)/'linked').symlink_to(directory,target_is_directory=True)
-            with self.assertRaises(ValueError):Simulation.run(sim,storage_name='linked')
+            with self.assertRaises(ValueError):sim.run(storage_name='linked')
             for name in ['../outside','.', '/absolute', 'folder/file', 'folder\\file']:
-                with self.assertRaises(ValueError):Simulation.run(sim,storage_name=name)
+                with self.assertRaises(ValueError):sim.run(storage_name=name)

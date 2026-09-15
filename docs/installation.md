@@ -19,11 +19,23 @@ you installed the package. The distribution is called `fys2160-simple-md`;
 its Python import is **`fys2160_md`**.
 
 ```python
-from fys2160_md import FCC, Simulation
+import matplotlib.pyplot as plt
+from fys2160_md import FCC, MDSimulation
 
 system = FCC(N=108, rho=.1)
-result = Simulation.run(system, steps=1000, storage_name="first-run")
-result.plot("temperature", "pressure")
+sim = MDSimulation(system, temperature=2)
+result = sim.run(steps=1000, storage_name="first-run")
+data = result.thermo
+plt.figure(figsize=(8, 5))
+plt.subplot(2, 1, 1)
+plt.plot(data.time, data.temperature)
+plt.ylabel("Temperature")
+plt.subplot(2, 1, 2)
+plt.plot(data.time, data.pressure)
+plt.ylabel("Pressure")
+plt.xlabel("Time")
+plt.tight_layout()
+plt.show()
 result.view()
 ```
 

@@ -14,7 +14,7 @@ def write_json(path: Path, value: dict) -> None:
 
 
 class Run:
-    """One saved call to Simulation.run, including its configuration and samples."""
+    """One saved call to MDSimulation.run, including its configuration and samples."""
 
     def __init__(self, path):
         self.path = Path(path).expanduser().resolve()

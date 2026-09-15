@@ -27,7 +27,8 @@ nav:
   - Executed notebook: examples/notebook.md
 - API reference:
   - System & geometry: api/system.md
-  - Simulation.run: api/simulation.md
+  - MDSimulation: api/simulation.md
+  - Bonds and interactions: api/interactions.md
   - Saved Run: api/results.md
 - Physics & validation: physics.md
 plugins:
@@ -42,3 +43,6 @@ markdown_extensions:
     anchor_linenums: true
 extra_css:
 - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/notebook-size.js

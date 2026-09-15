@@ -38,7 +38,7 @@ class LiveView:
         note += (f'{self.frame_every} MD steps/frame; capped at {self.max_fps:g} fps.'
                  if self.max_fps is not None else 'Full simulation speed; display updates capped at 20 fps.')
         self.widget = self.widget_type(
-            configuration=dict(projection='perspective', zoom=1., molecular=sim.model!='atomic', note=note),
+            configuration=dict(projection='perspective', zoom=1., sigma=sim.sigma, molecular=sim.model!='atomic', note=note),
             frame=self.snapshot(sim))
         display(self.widget)
         self.last = time.monotonic()
@@ -85,7 +85,7 @@ def trajectory_player(run, *, max_frames=150, max_atoms=1500, projection='orthog
         with np.load(paths[index], allow_pickle=False) as f:
             frames.append(dict(x=np.round(f['positions'][:int(max_atoms)], 5).tolist(),
                                box=f['box'].tolist(), time=float(f['time']), step=int(f['step'])))
-    data = dict(frames=frames, projection=projection, zoom=zoom, molecular=run.metadata['configuration']['model'] != 'atomic')
+    data = dict(frames=frames, projection=projection, zoom=zoom, sigma=run.metadata['configuration'].get('sigma', 1.), molecular=run.metadata['configuration']['model'] != 'atomic')
     identifier = 'md-'+uuid.uuid4().hex
     note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll over the view to zoom. Arrow keys also rotate the focused view. Display sampling does not change saved data.'
     data.update(note=note, live=False)
