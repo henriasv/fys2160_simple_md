@@ -1,0 +1,9 @@
+build/
+dist/
+*.egg-info/
+*.so
+*.pyd
+__pycache__/
+.ipynb_checkpoints/
+runs/
+.venv/
