@@ -9,7 +9,7 @@ el.replaceChildren(root);
 root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:#f4f7fa;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
 root.querySelector('[data-note]').textContent=data.note;
 let state=data.live?'Running':'',pendingDraw=0;
-const canvas=root.querySelector('canvas'),ctx=canvas.getContext('2d'),button=root.querySelector('button'),slider=root.querySelector('input'),label=root.querySelector('output');
+const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('button'),slider=root.querySelector('input'),label=root.querySelector('output');
 const projection=root.querySelector('select');projection.value=data.projection;
 const zoomSlider=root.querySelector('[aria-label="Zoom"]'),zoomLabel=root.querySelector('[data-zoom-value]');
 let zoom=data.zoom;zoomSlider.value=Math.round(100*zoom);zoomLabel.textContent=Math.round(100*zoom)+'%';
@@ -30,21 +30,10 @@ function rotateView(dx,dy){
     rotation[0][k]=xx;rotation[1][k]=cX*y-sX*zz;rotation[2][k]=sX*y+cX*zz;
   }
 }
-function project(p){const centered=p.map(v=>v-.5);
-  const r=rotation.map(row=>row.reduce((sum,v,i)=>sum+v*centered[i],0));
-  const factor=projection.value==='perspective'?2.5/(2.5-r[2]):1;
-  return [360+pan[0]+300*zoom*factor*r[0],300+pan[1]-300*zoom*factor*r[1],r[2],factor];
+function cameraPosition(p){
+  const centered=p.map(v=>v-.5);
+  return rotation.map(row=>row.reduce((sum,v,i)=>sum+v*centered[i],0));
 }
-// Build two shaded billboard textures once; drawing particles stays inexpensive.
-function sphereTexture(stops){
-  const sprite=document.createElement('canvas');sprite.width=sprite.height=64;
-  const c=sprite.getContext('2d'),g=c.createRadialGradient(22,20,1,30,30,33);
-  stops.forEach(([offset,color])=>g.addColorStop(offset,color));
-  c.fillStyle=g;c.beginPath();c.arc(32,32,30,0,2*Math.PI);c.fill();return sprite;
-}
-const sprites=[sphereTexture([[0,'#f0fbff'],[.3,'#9cd7ed'],[.65,'#3494ba'],[1,'#153d56']]),
-               sphereTexture([[0,'#fff5df'],[.3,'#f6c186'],[.65,'#d78238'],[1,'#754019']])];
-function line(a,b,color,width){ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();}
 // Keep projection, particles and bonds in the same logical coordinate system.
 // Rebuild the backing bitmap at the actual display resolution after editor zoom
 // or pane resizing; changing its attributes must not change the CSS aspect ratio.
@@ -53,14 +42,14 @@ const bounds=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
 const width=Math.max(1,Math.round(bounds.width*dpr));
 const height=Math.max(1,Math.round(bounds.height*dpr));
 if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;}
-ctx.setTransform(width/720,0,0,height/600,0,0);
-const f=frames[+slider.value];ctx.clearRect(0,0,720,600);
-for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b)line(project(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f.box)),project(normalize([b&1,(b>>1)&1,(b>>2)&1].map((v,d)=>v*f.box[d]),f.box)),'#a8b8c4',1);}
-const positions=f.x.map(p=>p.map((v,d)=>v/f.box[d]));const points=f.x.map(p=>project(normalize(p,f.box)));
-if(data.molecular)for(let i=0;i+1<points.length;i+=2){if(positions[i].every((v,d)=>Math.abs(v-positions[i+1][d])<.5))line(points[i],points[i+1],'#7d8b96',2);}
-// Radius = 0.5 sigma, projected with the same length scale as positions.
-// The sprite circle occupies 60 of its 64 pixels; compensate for its padding.
-points.map((p,i)=>({p,i})).sort((a,b)=>a.p[2]-b.p[2]).forEach(({p,i})=>{const radius=(300*.5/extent)*zoom*p[3]*(64/60);ctx.drawImage(sprites[data.molecular&&i%2?1:0],p[0]-radius,p[1]-radius,2*radius,2*radius);});
+const f=frames[+slider.value],edges=[],bonds=[];
+const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f.box)));
+for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b)edges.push(corners[a],corners[b]);}
+const positions=f.x.map(p=>cameraPosition(normalize(p,f.box)));
+if(data.molecular)for(let i=0;i+1<positions.length;i+=2){
+  if(f.x[i].every((v,d)=>Math.abs(v-f.x[i+1][d])<.5*f.box[d]))bonds.push(positions[i],positions[i+1]);
+}
+renderer.draw({positions,edges,bonds,radius:.5/extent,zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
 updateLabel(f);}
 function updateLabel(f){
   label.textContent=(state?state+' · ':'')+'Step '+f.step+' · t* '+f.time.toFixed(2)
@@ -120,6 +109,133 @@ return {
     requestDraw();
   },
   setStatus(status){state=status.charAt(0).toUpperCase()+status.slice(1);updateLabel(frames[0]);},
-  dispose(){stop();resizeObserver.disconnect();resolution.removeEventListener('change',watchResolution);if(pendingDraw)cancelAnimationFrame(pendingDraw);}
+  dispose(){stop();renderer.dispose();resizeObserver.disconnect();resolution.removeEventListener('change',watchResolution);if(pendingDraw)cancelAnimationFrame(pendingDraw);}
 };
+}
+
+// Sphere impostors: one quad per atom, with ray/sphere intersection and surface
+// depth per pixel. Centre-sorted discs cannot resolve dense, nearly coplanar atoms.
+function createMDSphereRenderer(canvas){
+  const gl=canvas.getContext('webgl2',{alpha:true,antialias:true,depth:true});
+  if(!gl)throw new Error('The MD viewer requires WebGL 2. Enable graphics acceleration in your notebook browser/editor.');
+  const programs=[],buffers=[],arrays=[];
+  function program(vertex,fragment){
+    function shader(type,source){
+      const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);
+      if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){const error=gl.getShaderInfoLog(s);gl.deleteShader(s);throw new Error(error);}
+      return s;
+    }
+    const vs=shader(gl.VERTEX_SHADER,vertex),fs=shader(gl.FRAGMENT_SHADER,fragment),p=gl.createProgram();
+    gl.attachShader(p,vs);gl.attachShader(p,fs);gl.linkProgram(p);gl.deleteShader(vs);gl.deleteShader(fs);
+    if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(p));
+    programs.push(p);return p;
+  }
+  const common=`
+precision highp float;
+uniform vec2 u_origin, u_scale, u_viewport;
+uniform bool u_perspective;
+uniform float u_radius;
+`;
+  const spheres=program(`#version 300 es
+${common}
+layout(location=0) in vec3 a_center;
+layout(location=1) in float a_kind;
+flat out vec3 v_center;
+flat out float v_kind;
+void main(){
+  // Project the enclosing cube to conservatively bound the sphere, including
+  // the off-axis perspective silhouette (a scaled centre-disc is insufficient).
+  vec2 lo=vec2(1e10),hi=vec2(-1e10);
+  for(int i=0;i<8;i++){
+    vec3 corner=a_center+u_radius*vec3((i&1)==0?-1.:1.,(i&2)==0?-1.:1.,(i&4)==0?-1.:1.);
+    vec2 p=corner.xy*(u_perspective?2.5/(2.5-corner.z):1.);
+    lo=min(lo,p);hi=max(hi,p);
+  }
+  // One physical pixel of padding prevents raster rounding clipping the rim.
+  lo-=1./(u_viewport*u_scale);hi+=1./(u_viewport*u_scale);
+  vec2 corners[6]=vec2[6](vec2(0,0),vec2(1,0),vec2(0,1),vec2(0,1),vec2(1,0),vec2(1,1));
+  vec2 p=mix(lo,hi,corners[gl_VertexID]);
+  gl_Position=vec4(2.*(u_origin+u_scale*p)-1.,0.,1.);
+  v_center=a_center;v_kind=a_kind;
+}`,`#version 300 es
+${common}
+flat in vec3 v_center;
+flat in float v_kind;
+out vec4 color;
+void main(){
+  vec2 p=(gl_FragCoord.xy/u_viewport-u_origin)/u_scale;
+  vec3 origin=u_perspective?vec3(0,0,2.5):vec3(p,2.5);
+  vec3 direction=u_perspective?normalize(vec3(p,-2.5)):vec3(0,0,-1);
+  vec3 offset=origin-v_center;
+  float b=dot(offset,direction);
+  float discriminant=b*b-dot(offset,offset)+u_radius*u_radius;
+  if(discriminant<0.)discard;
+  float t=-b-sqrt(discriminant);
+  if(t<0.)discard;
+  vec3 hit=origin+t*direction;
+  vec3 normal=normalize(hit-v_center);
+  gl_FragDepth=(2.5-hit.z)/5.;
+  vec3 light=normalize(vec3(-.5,.65,1.));
+  vec3 halfDirection=normalize(light-direction);
+  float diffuse=max(dot(normal,light),0.);
+  float specular=pow(max(dot(normal,halfDirection),0.),40.);
+  vec3 base=v_kind>.5?vec3(.84,.48,.19):vec3(.16,.57,.72);
+  color=vec4(base*(.26+.74*diffuse)+vec3(.65)*specular,1.);
+}`);
+  const lines=program(`#version 300 es
+${common}
+layout(location=0) in vec3 a_position;
+out vec3 v_position;
+void main(){
+  float w=u_perspective?(2.5-a_position.z)/2.5:1.;
+  vec2 xy=(2.*u_origin-1.)*w+2.*u_scale*a_position.xy;
+  gl_Position=vec4(xy,0.,w);
+  v_position=a_position;
+}`,`#version 300 es
+precision highp float;
+in vec3 v_position;
+uniform vec3 u_color;
+out vec4 color;
+void main(){gl_FragDepth=(2.5-v_position.z)/5.;color=vec4(u_color,1.);}
+`);
+  function geometry(instanced){
+    const vao=gl.createVertexArray(),buffer=gl.createBuffer();arrays.push(vao);buffers.push(buffer);
+    gl.bindVertexArray(vao);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
+    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,instanced?16:12,0);
+    if(instanced){
+      gl.vertexAttribDivisor(0,1);gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1,1,gl.FLOAT,false,16,12);gl.vertexAttribDivisor(1,1);
+    }
+    return {vao,buffer};
+  }
+  const atomGeometry=geometry(true),lineGeometry=geometry(false);
+  const uniforms=new Map(programs.map(p=>[p,Object.fromEntries(['origin','scale','viewport','perspective','radius','color'].map(n=>[n,gl.getUniformLocation(p,'u_'+n)]))]));
+  function configure(p,scene){
+    gl.useProgram(p);const u=uniforms.get(p);
+    gl.uniform2f(u.origin,(360+scene.pan[0])/720,(300-scene.pan[1])/600);
+    gl.uniform2f(u.scale,300*scene.zoom/720,300*scene.zoom/600);
+    gl.uniform2f(u.viewport,canvas.width,canvas.height);
+    gl.uniform1i(u.perspective,scene.perspective);gl.uniform1f(u.radius,scene.radius);
+  }
+  function drawLines(vertices,color,scene){
+    if(!vertices.length)return;
+    configure(lines,scene);gl.uniform3fv(uniforms.get(lines).color,color);
+    gl.bindVertexArray(lineGeometry.vao);gl.bindBuffer(gl.ARRAY_BUFFER,lineGeometry.buffer);
+    gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices.flat()),gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.LINES,0,vertices.length);
+  }
+  return {
+    draw(scene){
+      gl.viewport(0,0,canvas.width,canvas.height);gl.enable(gl.DEPTH_TEST);gl.depthFunc(gl.LESS);
+      gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+      drawLines(scene.edges,[.66,.72,.77],scene);drawLines(scene.bonds,[.49,.55,.59],scene);
+      configure(spheres,scene);gl.bindVertexArray(atomGeometry.vao);gl.bindBuffer(gl.ARRAY_BUFFER,atomGeometry.buffer);
+      const atoms=new Float32Array(scene.positions.length*4);
+      scene.positions.forEach((p,i)=>{atoms.set(p,4*i);atoms[4*i+3]=scene.molecular?i%2:0;});
+      gl.bufferData(gl.ARRAY_BUFFER,atoms,gl.DYNAMIC_DRAW);
+      gl.drawArraysInstanced(gl.TRIANGLES,0,6,scene.positions.length);
+      gl.bindVertexArray(null);
+    },
+    dispose(){arrays.forEach(v=>gl.deleteVertexArray(v));buffers.forEach(b=>gl.deleteBuffer(b));programs.forEach(p=>gl.deleteProgram(p));}
+  };
 }

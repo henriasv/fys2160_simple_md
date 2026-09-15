@@ -3,14 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 let images = [], disconnected = false;
-const context = {
-  clearRect(){ images=[]; }, setTransform(){}, beginPath(){}, moveTo(){}, lineTo(){}, stroke(){},
-  createRadialGradient(){return {addColorStop(){}};}, arc(){}, fill(){},
-  drawImage(sprite,x,y,w,h){images.push([x+w/2,y+h/2,w]);}
-};
 const canvas = {
   width:720,height:600,setAttribute(){},setPointerCapture(){},
-  getContext(){return context;},getBoundingClientRect(){return {width:720,height:600};},
+  getBoundingClientRect(){return {width:720,height:600};},
   addEventListener(name,fn){this['on'+name]=fn;}
 };
 const controls = new Map([['canvas',canvas]]);
@@ -19,13 +14,22 @@ const root = {style:{},dataset:{},isConnected:true,
 };
 const host = {style:{cssText:'display:contents'},replaceChildren(child){this.child=child;}};
 const sandbox = {
-  document:{createElement(tag){return tag==='div'?root:{getContext(){return context;}};}},
+  document:{createElement(){return root;}},
   window:{devicePixelRatio:2,matchMedia(){return {addEventListener(){},removeEventListener(){}};}},
   ResizeObserver:class {observe(){} disconnect(){disconnected=true;}},
   requestAnimationFrame(){return 1;},cancelAnimationFrame(){},setInterval,clearInterval
 };
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(__dirname+'/../src/fys2160_md/viewer.js','utf8'),sandbox);
+// Test camera/geometry independently of GPU rasterization; the browser harness
+// checks real sphere-surface pixels and draw-order independence.
+sandbox.createMDSphereRenderer=()=>({draw(scene){
+  images=Array.from(scene.positions,p=>{
+    const factor=scene.perspective?2.5/(2.5-p[2]):1;
+    return [360+scene.pan[0]+300*scene.zoom*factor*p[0],
+            300+scene.pan[1]-300*scene.zoom*factor*p[1],600*scene.radius*scene.zoom*factor];
+  });
+},dispose(){}});
 const frame={box:[10,10,10],x:[[5,5,5],[7,6,5]],step:0,time:0,temperature:2,pressure:1};
 const view=sandbox.createMDView(host,{frames:[frame],projection:'orthographic',zoom:1,live:true,note:''});
 assert.equal(host.child,root);
@@ -62,6 +66,6 @@ view.dispose();assert.ok(disconnected);
 const expanded={...frame,box:[20,20,20],x:frame.x.map(p=>p.map(v=>2*v))};
 const second=sandbox.createMDView(host,{frames:[expanded],projection:'orthographic',zoom:1,live:true,note:''});
 assert.equal(images[0][2],original[0][2]/2); // Same N, 8x lower density: half the projected radius.
-assert.equal(original[0][2]*60/64,30); // Diameter sigma=1 at 300/10 pixels per sigma.
+assert.equal(original[0][2],30); // Diameter sigma=1 at 300/10 pixels per sigma.
 second.dispose();
 console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, sizing and cleanup.');
