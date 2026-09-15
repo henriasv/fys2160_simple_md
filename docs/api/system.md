@@ -11,19 +11,19 @@ manages the experiment; the evolving state is available as `sim.system`.
 ## FCC
 
 ```python
-FCC(*, N=500, rho=None, box=None, molecule=None, bond=None, model=None, seed=87287)
+FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287)
 ```
 
 Returns a `System` with a complete periodic FCC lattice and velocities not yet
-assigned. Default: cubic box at rho = 0.001. Supply either rho or box; N counts
+assigned. Default: 500 particles in a cubic box at rho = 0.001. Supply either rho or box; N counts
 atoms or molecules according to molecule. Cubes require N=4n³; rectangular boxes
 require commensurate whole conventional cells. `seed` controls molecular orientations.
 
 ## Random
 
 ```python
-Random(*, N=500, rho=None, box=None, min_distance=.9,
-       max_attempts=1000, molecule=None, bond=None, model=None, seed=87287)
+Random(*, N=None, rho=None, box=None, min_distance=.9,
+       max_attempts=1000, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287)
 ```
 
 Returns a `System` with self-avoiding random positions and velocities not yet
@@ -35,7 +35,7 @@ controls placement and molecular orientations, independently of the simulation s
 ## Explicit System
 
 ```python
-System(positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None)
+System(positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None)
 ```
 
 Positions are a (number of atoms, 3) array; box is a scalar or length-3 array.
@@ -44,7 +44,7 @@ defaulting to one. Inputs are copied, and positions wrap into the periodic box.
 Use `molecule="diatomic"` with a `HarmonicBond` or `RigidBond`.
 The default is unbonded atoms; diatomics default to `HarmonicBond()` if bond is omitted.
 
-For diatomics, partners are consecutive and atom masses must be equal. Rigid
+For diatomics, partners are consecutive. Different atom masses are supported. Rigid
 bonds must have their specified length; supplied velocities must be tangent to those bonds.
 The solver requires zero total momentum when explicit velocities are supplied.
 
@@ -61,6 +61,8 @@ sets the thermostat target, not an immediate velocity reset.
 
 | Attribute | Result |
 |---|---|
+| `system.species` | Tuple of distinct species names |
+| `system.atoms.species` | Read-only per-atom species labels |
 | `system.molecule` | None for atoms, `"diatomic"` for molecules |
 | `system.bond` | Immutable bond settings, or None |
 | `system.bonds` | Read-only (number of bonds, 2) array of connected atom indices |
@@ -84,3 +86,17 @@ belong to [MDSimulation](simulation.md).
 The legacy `model=` argument is retained for old code. `diatomic-flexible` selects
 the old `Class2Bond`, and `diatomic-rigid` selects `RigidBond()`. Do not combine
 `model=` and `molecule=`. New code should name the bond explicitly.
+
+## Species and masses
+
+For FCC/Random, `species="A"` names a pure system. A mapping such as
+`species={"A": 80, "B": 20}` specifies exact counts; omitted N is their sum.
+If N is supplied too, it must match. With neither N nor species counts, N is 500.
+Species are shuffled reproducibly among sites using the geometry seed.
+`masses=1` applies one mass to every atom; `masses={"A": 1, "B": 4}` sets per-species
+masses. Every named species must have a positive mass. Molecular counts are
+numbers of homonuclear molecules, while masses remain **per atom**.
+
+For an explicit System, `species` is a single string or one label per atom;
+`masses` is a per-atom array. This also supports heteronuclear diatomics:
+consecutive partners may have different species and masses.

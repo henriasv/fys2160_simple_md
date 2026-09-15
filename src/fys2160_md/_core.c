@@ -65,11 +65,10 @@ static int needs_rebuild(const Neighbors *nb, int n, const double *u,
 /* Independent nonbonded LJ selection and bonded-pair exclusion.
    Flexible bonds use a polynomial (including the harmonic special case). */
 static int forces(const Neighbors *nb, int n, const double *x, const double *box,
-                  double cutoff, int model, int pair, double epsilon, double sigma, int exclude, double length, double k2, double k3, double k4, double *f, double *potential, double *virial) {
+                  double cutoff, int model, int pair, double epsilon, double sigma, const double *parameters, int exclude, double length, double k2, double k3, double k4, double *f, double *potential, double *virial) {
     memset(f, 0, (size_t)n * 3 * sizeof(double));
     *potential = 0; *virial = 0;
-    double invc2 = sigma*sigma / (cutoff * cutoff), invc6 = invc2 * invc2 * invc2;
-    double shift = epsilon*(pair ? 2*pow(invc2,4.5)-3*invc6 : 4*invc6*(invc6-1));
+
     double rc2 = cutoff*cutoff;
     for (size_t p = 0; p < nb->size; ++p) {
         int i = nb->pairs[p].i, j = nb->pairs[p].j;
@@ -84,6 +83,9 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
             PyErr_SetString(PyExc_ValueError, "Overlapping atoms or unstable trajectory; check positions and timestep.");
             return -1;
         }
+        if(parameters){epsilon=sqrt(parameters[2*i])*sqrt(parameters[2*j]);sigma=.5*parameters[2*i+1]+.5*parameters[2*j+1];}
+        double invc2=sigma*sigma/(cutoff*cutoff),invc6=invc2*invc2*invc2;
+        double shift=epsilon*(pair?2*invc6*sqrt(invc6)-3*invc6:4*invc6*(invc6-1));
         double inv2 = 1/r2, s2 = sigma*sigma*inv2, inv6 = s2*s2*s2;
         double coefficient;
         if(pair) {
@@ -191,7 +193,7 @@ static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
 /* Molecular pressure uses COM kinetic energy and intermolecular COM virial.
    It avoids noisy finite-difference constraint-force estimates for rigid bonds. */
 static double molecular_pressure_numerator(const Neighbors *nb,int n,const double *x,
-                 const double *v,const double *mass,const double *box,double cutoff,int pair,double epsilon,double sigma) {
+                 const double *v,const double *mass,const double *box,double cutoff,int pair,double epsilon,double sigma,const double *parameters) {
     double value=0;
     for(int i=0;i<n;i+=2)for(int d=0;d<3;++d){
         double momentum=mass[i]*v[3*i+d]+mass[i+1]*v[3*(i+1)+d];
@@ -211,6 +213,7 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
             cm[d]=dr[d]+offset_i-offset_j;
         }
         if(r2>=cutoff*cutoff)continue;
+        if(parameters){epsilon=sqrt(parameters[2*i])*sqrt(parameters[2*j]);sigma=.5*parameters[2*i+1]+.5*parameters[2*j+1];}
         double inv2=1/r2,s2=sigma*sigma*inv2,inv6=s2*s2*s2;
         double coef=epsilon*(pair ? 18*(inv6*sqrt(inv6)-inv6)*inv2 : 24*inv6*(2*inv6-1)*inv2);
         for(int d=0;d<3;++d)value+=cm[d]*coef*dr[d];
@@ -220,7 +223,9 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
 
 static PyObject *advance(PyObject *self, PyObject *args) {
     (void)self;
-    PyObject *objects[6], *result = NULL;
+    PyObject *objects[6], *result = NULL, *parameter_object=NULL;
+    Py_buffer parameter_buffer={0};
+    const double *parameters=NULL;
     Py_buffer buffers[6] = {{0}};
     int requested, done = 0, interrupted = 0;
     double dt, cutoff, skin, T, gamma, heat, targetP, baromass, rate, potential=0, virial=0;
@@ -228,9 +233,9 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
     Neighbors nb = {0};
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iidddddd", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddO", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object)) return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
         int flags = PyBUF_C_CONTIGUOUS | PyBUF_FORMAT | (k<5 ? PyBUF_WRITABLE : 0);
@@ -247,6 +252,23 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         goto cleanup;
     }
     int n = (int)buffers[0].shape[0];
+    if(parameter_object){
+        if(PyObject_GetBuffer(parameter_object,&parameter_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT)<0)goto cleanup;
+        if(parameter_buffer.ndim!=2 || parameter_buffer.shape[0]!=n || parameter_buffer.shape[1]!=2 ||
+           parameter_buffer.itemsize!=sizeof(double) || !parameter_buffer.format || strcmp(parameter_buffer.format,"d")!=0){
+            PyErr_SetString(PyExc_ValueError,"Pair parameters must be a contiguous float64 (N,2) array.");goto cleanup;
+        }
+        parameters=parameter_buffer.buf;
+        for(int i=0;i<2*n;++i)if(!(parameters[i]>0)||!isfinite(parameters[i])){
+            PyErr_SetString(PyExc_ValueError,"Pair epsilon and sigma must be finite and positive.");goto cleanup;
+        }
+        for(int i=0;i<5;++i){
+            uintptr_t a=(uintptr_t)parameter_buffer.buf,b=(uintptr_t)buffers[i].buf;
+            if(a<b+buffers[i].len && b<a+parameter_buffer.len){
+                PyErr_SetString(PyExc_ValueError,"Pair parameters must not overlap mutable state.");goto cleanup;
+            }
+        }
+    }
     for (int k=1;k<4;++k) if (buffers[k].ndim!=2 || buffers[k].shape[0]!=n || buffers[k].shape[1]!=3) {
         PyErr_SetString(PyExc_ValueError, "Position, velocity, unwrapped and force shapes must agree.");
         goto cleanup;
@@ -278,7 +300,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     nb.reference = malloc((size_t)n*3*sizeof(double));
     if(!nb.reference) {PyErr_NoMemory();goto cleanup;}
-    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,exclude,length,k2,k3,k4,f,&potential,&virial)<0) goto cleanup;
+    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,f,&potential,&virial)<0) goto cleanup;
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
     double dof=3*n-3-(model==2?n/2:0), pressure_numerator=0;
     /* Symmetric isotropic pressure-control splitting. rate = d(log L)/dt.
@@ -314,7 +336,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         if(needs_rebuild(&nb,n,u,box,cutoff,skin) && build_neighbors(&nb,n,x,u,box,cutoff+skin)<0)goto cleanup;
-        if(forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,exclude,length,k2,k3,k4,f,&potential,&virial)<0)goto cleanup;
+        if(forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,f,&potential,&virial)<0)goto cleanup;
         kick(n,v,f,mass,0.5*dt);
         if(model==2)constrain_velocities(n,v,x,box,mass);
         if(targetP>=0){
@@ -335,10 +357,11 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_Clear(); interrupted=1; break;
         }
     }
-    pressure_numerator=model?molecular_pressure_numerator(&nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma):2*kinetic(n,v,mass)+virial;
+    pressure_numerator=model?molecular_pressure_numerator(&nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):2*kinetic(n,v,mass)+virial;
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
 
 cleanup:
+    if(parameter_buffer.obj)PyBuffer_Release(&parameter_buffer);
     free(nb.pairs);free(nb.reference);
     for(int k=0;k<6;++k) if(buffers[k].obj) PyBuffer_Release(&buffers[k]);
     return result;

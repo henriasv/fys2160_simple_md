@@ -17,6 +17,7 @@ unchanged, so it can be reused for independent experiments.
 
 ```python
 MDSimulation(system, *, pair_potential="lj", epsilon=1., sigma=1.,
+           mixing_rule="lorentz-berthelot",
            exclude_bonded_pairs=True, temperature=2., ensemble="nvt", timestep=None,
            cutoff=2.5, skin=.4, friction=1., pressure=.01, pressure_time=5.,
            heat_rate=0., seed=87287, output_dir="runs", storage_name="simulation")
@@ -26,7 +27,8 @@ MDSimulation(system, *, pair_potential="lj", epsilon=1., sigma=1.,
 |---|---|
 | `system` | A System returned by FCC, Random or explicit arrays; copied on construction |
 | `pair_potential` | `"lj"` (12–6, default) or `"lj96"` (9–6); either works with atoms or molecules |
-| `epsilon`, `sigma` | Positive LJ energy and length parameters; both default to 1 |
+| `epsilon`, `sigma` | Positive scalar or per-species dictionary; both default to 1 |
+| `mixing_rule` | `"lorentz-berthelot"`: arithmetic sigma and geometric epsilon; the currently supported rule |
 | `exclude_bonded_pairs` | True by default: connected atom pairs feel the bond only |
 | `temperature` | Initial temperature for missing velocities and thermostat target |
 | `ensemble` | `nve`, `nvt`, or atomic-only `nph` / `npt` |
@@ -127,3 +129,6 @@ and symlinks are protected from replacement.
 Keyboard interruption saves the completed state with status `interrupted`.
 A numerical failure is marked `failed` and blocks further use of that simulation.
 Every completed/interrupted run has initial/final samples and a final checkpoint.
+
+For mixtures, epsilon/sigma dictionaries must match `system.species`. See the
+[mixture example](../examples/index.md#a-mixture-with-different-masses-and-interactions).

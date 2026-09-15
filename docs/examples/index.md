@@ -104,3 +104,66 @@ saved.view()
 
 No simulation runs when these files are loaded. Reusing a storage name intentionally
 replaces its files; choose a new name when you want to retain both results.
+
+## A mixture with different masses and interactions
+
+All species share one set of LJ reduced reference units. Here B has four times
+the mass, 1.2 times the size and half the well depth of A.
+
+```python
+from fys2160_md import Random, MDSimulation
+
+system = Random(
+    species={"A": 80, "B": 20},
+    rho=.02,
+    masses={"A": 1, "B": 4},
+    min_distance=1.1,
+)
+sim = MDSimulation(
+    system,
+    pair_potential="lj",
+    epsilon={"A": 1, "B": .5},
+    sigma={"A": 1, "B": 1.2},
+    mixing_rule="lorentz-berthelot",
+    temperature=2,
+)
+mixture = sim.run(steps=3000, save_every=30, storage_name="mixture")
+mixture.view(max_frames=101, projection="perspective")
+```
+
+N is inferred from the counts (100 atoms). A scalar mass, epsilon or sigma applies
+to every species; a dictionary must contain every species name exactly once.
+For a mass-only comparison, retain `epsilon=1, sigma=1` and vary `masses`.
+This changes the motion without changing the potential energy function.
+
+Unlike interactions use sigma_AB = (sigma_A + sigma_B)/2 and
+ epsilon_AB = sqrt(epsilon_A epsilon_B). The mixing rule is a stated model choice,
+not a universal material law. The common cutoff is in reference length units;
+it is not automatically multiplied by each species' sigma.
+
+```python
+import numpy as np
+
+atoms = sim.system.atoms
+for name in sim.system.species:
+    selected = atoms.species == name
+    mean_v2 = np.mean(np.sum(atoms.velocities[selected]**2, axis=1))
+    print(name, selected.sum(), mean_v2)
+```
+
+This is a snapshot, not a time average. At equilibrium, mean squared speed scales
+approximately as 1/mass at fixed temperature (with a finite-system correction
+from removing total momentum). The [recorded notebook](notebook.md) includes
+this mixture with working playback.
+
+For a molecular mixture, counts refer to molecules and masses to **each atom**:
+
+```python
+system = Random(species={"A": 24, "B": 8}, rho=.01,
+                masses={"A": 1, "B": 4}, molecule="diatomic",
+                bond=RigidBond(length=.7))
+```
+
+This creates 24 A–A and 8 B–B molecules, with masses 2 and 8 per molecule.
+They share the selected bond model. Use explicit System arrays for heteronuclear
+molecules; consecutive atom pairs are bonded.

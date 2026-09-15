@@ -69,3 +69,18 @@ atoms in different molecules feel Lennard–Jones. Use `RigidBond(length=.7)`
 for fixed bond lengths. Geometry and interaction parameters use fixed reduced
 reference units; changing sigma does not rescale the box or bond.
 See the [interaction reference](https://henriasv.github.io/fys2160_simple_md/api/interactions/).
+
+## Mixtures in shared LJ units
+
+```python
+system = Random(species={"A": 80, "B": 20}, rho=.02,
+                masses={"A": 1, "B": 4}, min_distance=1.1)
+sim = MDSimulation(system, epsilon={"A": 1, "B": .5},
+                   sigma={"A": 1, "B": 1.2}, temperature=2)
+result = sim.run(steps=3000, storage_name="mixture")
+```
+
+All species share fixed LJ reference units. Unlike pairs use the explicitly
+named Lorentz–Berthelot mixing rule: arithmetic mean of sigma and geometric mean
+of epsilon. Counts infer N, masses are per atom, and a scalar parameter applies
+to every species. The examples page and executed notebook demonstrate mixtures.

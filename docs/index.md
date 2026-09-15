@@ -59,6 +59,7 @@ plots and replays the recorded result—even in a later Python session.
 - Explicit heating for simple heat-capacity measurements.
 - Live notebook views and portable saved trajectories.
 
-All numbers use reduced units: σ = ε = reference mass = kB = 1.
-The examples favour clear means and straight-line fits. Read the
+All numbers use LJ reduced reference units: σ_ref = ε_ref = mass_ref = kB = 1.
+Species may have different masses and interaction parameters in those shared units.
+The examples use ordinary NumPy, pandas and pyplot. Read the
 [physics notes](physics.md) for the model conventions and limits.

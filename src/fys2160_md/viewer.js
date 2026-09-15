@@ -7,7 +7,9 @@ root.dataset.mdView='';
 root.style.cssText='display:block;box-sizing:border-box;width:720px;max-width:100%;min-width:0;font:14px system-ui;color:#233744';
 el.replaceChildren(root);
 root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:#f4f7fa;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
-root.querySelector('[data-note]').textContent=data.note;
+const speciesNames=[...new Set(data.species||[])];
+const speciesColors=['blue','orange','green','purple','red','grey'];
+root.querySelector('[data-note]').textContent=data.note+(speciesNames.length>1?' Species: '+speciesNames.map((name,i)=>name+' ('+speciesColors[i%6]+')').join(', ')+'.':'');
 let state=data.live?'Running':'',pendingDraw=0;
 const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('button'),slider=root.querySelector('input'),label=root.querySelector('output');
 const projection=root.querySelector('select');projection.value=data.projection;
@@ -49,7 +51,9 @@ const positions=f.x.map(p=>cameraPosition(normalize(p,f.box)));
 if(data.molecular)for(let i=0;i+1<positions.length;i+=2){
   if(f.x[i].every((v,d)=>Math.abs(v-f.x[i+1][d])<.5*f.box[d]))bonds.push(positions[i],positions[i+1]);
 }
-renderer.draw({positions,edges,bonds,radius:.5*(data.sigma??1)/extent,zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
+renderer.draw({positions,edges,bonds,radius:.5*(typeof data.sigma==='number'?data.sigma:1)/extent,
+radii:positions.map((_,i)=>.5*(typeof data.sigma==='object'?data.sigma[data.species[i]]:(data.sigma??1))/extent),
+kinds:positions.map((_,i)=>speciesNames.length>0?speciesNames.indexOf(data.species[i]):(data.molecular?i%2:0)),zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
 updateLabel(f);}
 function updateLabel(f){
   label.textContent=(state?state+' · ':'')+'Step '+f.step+' · t* '+f.time.toFixed(2)
@@ -140,14 +144,16 @@ uniform float u_radius;
 ${common}
 layout(location=0) in vec3 a_center;
 layout(location=1) in float a_kind;
+layout(location=2) in float a_radius;
 flat out vec3 v_center;
 flat out float v_kind;
+flat out float v_radius;
 void main(){
   // Project the enclosing cube to conservatively bound the sphere, including
   // the off-axis perspective silhouette (a scaled centre-disc is insufficient).
   vec2 lo=vec2(1e10),hi=vec2(-1e10);
   for(int i=0;i<8;i++){
-    vec3 corner=a_center+u_radius*vec3((i&1)==0?-1.:1.,(i&2)==0?-1.:1.,(i&4)==0?-1.:1.);
+    vec3 corner=a_center+a_radius*vec3((i&1)==0?-1.:1.,(i&2)==0?-1.:1.,(i&4)==0?-1.:1.);
     vec2 p=corner.xy*(u_perspective?2.5/(2.5-corner.z):1.);
     lo=min(lo,p);hi=max(hi,p);
   }
@@ -156,11 +162,12 @@ void main(){
   vec2 corners[6]=vec2[6](vec2(0,0),vec2(1,0),vec2(0,1),vec2(0,1),vec2(1,0),vec2(1,1));
   vec2 p=mix(lo,hi,corners[gl_VertexID]);
   gl_Position=vec4(2.*(u_origin+u_scale*p)-1.,0.,1.);
-  v_center=a_center;v_kind=a_kind;
+  v_center=a_center;v_kind=a_kind;v_radius=a_radius;
 }`,`#version 300 es
 ${common}
 flat in vec3 v_center;
 flat in float v_kind;
+flat in float v_radius;
 out vec4 color;
 void main(){
   vec2 p=(gl_FragCoord.xy/u_viewport-u_origin)/u_scale;
@@ -168,7 +175,7 @@ void main(){
   vec3 direction=u_perspective?normalize(vec3(p,-2.5)):vec3(0,0,-1);
   vec3 offset=origin-v_center;
   float b=dot(offset,direction);
-  float discriminant=b*b-dot(offset,offset)+u_radius*u_radius;
+  float discriminant=b*b-dot(offset,offset)+v_radius*v_radius;
   if(discriminant<0.)discard;
   float t=-b-sqrt(discriminant);
   if(t<0.)discard;
@@ -179,7 +186,8 @@ void main(){
   vec3 halfDirection=normalize(light-direction);
   float diffuse=max(dot(normal,light),0.);
   float specular=pow(max(dot(normal,halfDirection),0.),40.);
-  vec3 base=v_kind>.5?vec3(.84,.48,.19):vec3(.16,.57,.72);
+  float kind=mod(v_kind,6.);
+  vec3 base=kind<.5?vec3(.16,.57,.72):kind<1.5?vec3(.84,.48,.19):kind<2.5?vec3(.25,.65,.4):kind<3.5?vec3(.6,.4,.75):kind<4.5?vec3(.8,.3,.35):vec3(.5,.55,.6);
   color=vec4(base*(.26+.74*diffuse)+vec3(.65)*specular,1.);
 }`);
   const lines=program(`#version 300 es
@@ -201,10 +209,11 @@ void main(){gl_FragDepth=(2.5-v_position.z)/5.;color=vec4(u_color,1.);}
   function geometry(instanced){
     const vao=gl.createVertexArray(),buffer=gl.createBuffer();arrays.push(vao);buffers.push(buffer);
     gl.bindVertexArray(vao);gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
-    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,instanced?16:12,0);
+    gl.enableVertexAttribArray(0);gl.vertexAttribPointer(0,3,gl.FLOAT,false,instanced?20:12,0);
     if(instanced){
       gl.vertexAttribDivisor(0,1);gl.enableVertexAttribArray(1);
-      gl.vertexAttribPointer(1,1,gl.FLOAT,false,16,12);gl.vertexAttribDivisor(1,1);
+      gl.vertexAttribPointer(1,1,gl.FLOAT,false,20,12);gl.vertexAttribDivisor(1,1);
+      gl.enableVertexAttribArray(2);gl.vertexAttribPointer(2,1,gl.FLOAT,false,20,16);gl.vertexAttribDivisor(2,1);
     }
     return {vao,buffer};
   }
@@ -230,8 +239,8 @@ void main(){gl_FragDepth=(2.5-v_position.z)/5.;color=vec4(u_color,1.);}
       gl.clearColor(0,0,0,0);gl.clearDepth(1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
       drawLines(scene.edges,[.66,.72,.77],scene);drawLines(scene.bonds,[.49,.55,.59],scene);
       configure(spheres,scene);gl.bindVertexArray(atomGeometry.vao);gl.bindBuffer(gl.ARRAY_BUFFER,atomGeometry.buffer);
-      const atoms=new Float32Array(scene.positions.length*4);
-      scene.positions.forEach((p,i)=>{atoms.set(p,4*i);atoms[4*i+3]=scene.molecular?i%2:0;});
+      const atoms=new Float32Array(scene.positions.length*5);
+      scene.positions.forEach((p,i)=>{atoms.set(p,5*i);atoms[5*i+3]=scene.kinds?.[i]??(scene.molecular?i%2:0);atoms[5*i+4]=scene.radii?.[i]??scene.radius;});
       gl.bufferData(gl.ARRAY_BUFFER,atoms,gl.DYNAMIC_DRAW);
       gl.drawArraysInstanced(gl.TRIANGLES,0,6,scene.positions.length);
       gl.bindVertexArray(null);

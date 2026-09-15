@@ -82,3 +82,16 @@ within that bond. Molecular pressure includes intermolecular forces and COM moti
 
 Exclusion is determined by **connectivity**, not atom type. It never removes
 interactions with matching atom types in other molecules.
+
+## Mixtures
+
+Species share fixed LJ reference units: sigma_ref = epsilon_ref = mass_ref = kB = 1.
+Use a scalar epsilon/sigma for identical interactions or dictionaries for distinct
+species. With `mixing_rule="lorentz-berthelot"` (the default and currently supported
+rule), sigma_ij = (sigma_i + sigma_j)/2 and epsilon_ij = sqrt(epsilon_i epsilon_j).
+Both 12–6 and 9–6 use this explicit rule. All pairs share the specified cutoff.
+No cross-pair overrides are currently provided.
+
+Masses belong to the System; they affect acceleration and thermal velocities,
+not the potential function. Inspect `system.atoms.species` and `.masses`.
+See [mixture examples](../examples/index.md#a-mixture-with-different-masses-and-interactions).

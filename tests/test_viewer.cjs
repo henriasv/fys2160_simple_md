@@ -24,10 +24,10 @@ vm.runInContext(fs.readFileSync(__dirname+'/../src/fys2160_md/viewer.js','utf8')
 // Test camera/geometry independently of GPU rasterization; the browser harness
 // checks real sphere-surface pixels and draw-order independence.
 sandbox.createMDSphereRenderer=()=>({draw(scene){
-  images=Array.from(scene.positions,p=>{
+  images=Array.from(scene.positions,(p,i)=>{
     const factor=scene.perspective?2.5/(2.5-p[2]):1;
     return [360+scene.pan[0]+300*scene.zoom*factor*p[0],
-            300+scene.pan[1]-300*scene.zoom*factor*p[1],600*scene.radius*scene.zoom*factor];
+            300+scene.pan[1]-300*scene.zoom*factor*p[1],600*(scene.radii?.[i]??scene.radius)*scene.zoom*factor];
   });
 },dispose(){}});
 const frame={box:[10,10,10],x:[[5,5,5],[7,6,5]],step:0,time:0,temperature:2,pressure:1};
@@ -71,4 +71,7 @@ second.dispose();
 const larger=sandbox.createMDView(host,{frames:[frame],sigma:1.5,projection:'orthographic',zoom:1,live:true,note:''});
 assert.equal(images[0][2],original[0][2]*1.5);
 larger.dispose();
+const mixture=sandbox.createMDView(host,{frames:[frame],species:['A','B'],sigma:{A:1,B:1.5},projection:'orthographic',zoom:1,live:true,note:''});
+assert.equal(images[0][2],30);assert.equal(images[1][2],45);
+assert.ok(controls.get('[data-note]').textContent.includes('B (orange)'));mixture.dispose();
 console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, sizing and cleanup.');

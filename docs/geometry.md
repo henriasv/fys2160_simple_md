@@ -63,3 +63,16 @@ partners must be consecutive; rigid bonds must satisfy the length and tangency
 constraints. The solver requires every box length to exceed twice its cutoff.
 
 See the [System reference](api/system.md) for all defaults.
+
+## Mixtures
+
+```python
+system = FCC(species={"A": 80, "B": 28}, rho=.2,
+             masses={"A": 1, "B": 4})
+```
+
+The total (108 here) must be an exact FCC count. Individual species counts need
+not be. Species are randomly assigned to lattice sites with a reproducible seed.
+Random accepts the same species/masses arguments and checks all interparticle
+separations regardless of species. Choose min_distance with the largest sigma
+in mind; geometry is constructed before the interactions are chosen.

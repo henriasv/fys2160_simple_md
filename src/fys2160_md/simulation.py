@@ -10,6 +10,7 @@ import numpy as np
 from . import _core
 from .system import System, MODELS, _positive, _integer, _readonly
 from .results import Run, write_json
+from .species import parameter, per_atom
 from .bonds import HarmonicBond, Class2Bond, bond_config, read_bond
 
 def _storage_name(value):
@@ -43,7 +44,7 @@ class MDSimulation:
     run calls continue this simulation's clock, state and physical settings.
     """
 
-    def __init__(self, system, *, pair_potential='lj', epsilon=1., sigma=1., exclude_bonded_pairs=True, temperature=2., ensemble='nvt', timestep=None,
+    def __init__(self, system, *, pair_potential='lj', epsilon=1., sigma=1., mixing_rule='lorentz-berthelot', exclude_bonded_pairs=True, temperature=2., ensemble='nvt', timestep=None,
                  cutoff=2.5, skin=.4, friction=1., pressure=.01, pressure_time=5.,
                  heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation'):
         if not isinstance(system,System):
@@ -54,8 +55,11 @@ class MDSimulation:
             raise ValueError('pair_potential must be "lj" (12–6) or "lj96" (9–6).')
         if not isinstance(exclude_bonded_pairs, bool):
             raise TypeError('exclude_bonded_pairs must be True or False.')
-        self._epsilon = _positive(epsilon, 'epsilon')
-        self._sigma = _positive(sigma, 'sigma')
+        if mixing_rule != 'lorentz-berthelot':
+            raise ValueError('mixing_rule must be "lorentz-berthelot".')
+        self._epsilon = parameter(epsilon, system.species, 'epsilon')
+        self._sigma = parameter(sigma, system.species, 'sigma')
+        self._pair_parameters = np.ascontiguousarray(np.column_stack((per_atom(self._epsilon, system._species), per_atom(self._sigma, system._species))))
         self._pair_potential = pair_potential
         self._exclude_bonded_pairs = exclude_bonded_pairs
         self._system=system.copy()
@@ -115,11 +119,15 @@ class MDSimulation:
 
     @property
     def epsilon(self):
-        return self._epsilon
+        return self._epsilon.copy() if isinstance(self._epsilon, dict) else self._epsilon
 
     @property
     def sigma(self):
-        return self._sigma
+        return self._sigma.copy() if isinstance(self._sigma, dict) else self._sigma
+
+    @property
+    def mixing_rule(self):
+        return 'lorentz-berthelot'
 
     @property
     def pair_potential(self):
@@ -156,9 +164,10 @@ class MDSimulation:
     def _project_velocities(self):
         r = self._bond_vectors()
         dot = (r*(self._v[::2]-self._v[1::2])).sum(axis=1)
-        correction = dot[:,None]*r/(r*r).sum(axis=1)[:,None]/2
-        self._v[::2] -= correction
-        self._v[1::2] += correction
+        inv_mass = 1/self._mass[::2] + 1/self._mass[1::2]
+        correction = dot[:,None]*r/((r*r).sum(axis=1)*inv_mass)[:,None]
+        self._v[::2] -= correction/self._mass[::2,None]
+        self._v[1::2] += correction/self._mass[1::2,None]
 
     @property
     def dof(self):
@@ -190,7 +199,7 @@ class MDSimulation:
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
-            int(self.pair_potential == 'lj96'), int(self.exclude_bonded_pairs), length, k2, k3, k4, self.epsilon, self.sigma)
+            int(self.pair_potential == 'lj96'), int(self.exclude_bonded_pairs), length, k2, k3, k4, 1., 1., self._pair_parameters)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, self._pressure_numerator = result
         self.step += done
         self.time += done*c['timestep']
@@ -216,7 +225,7 @@ class MDSimulation:
 
     def _config(self):
         return dict(model=self.model, bond=bond_config(self.system.bond),
-                    pair_potential=self.pair_potential, epsilon=self.epsilon, sigma=self.sigma, exclude_bonded_pairs=self.exclude_bonded_pairs, particles=self.particles,
+                    pair_potential=self.pair_potential, epsilon=self.epsilon, sigma=self.sigma, mixing_rule=self.mixing_rule, exclude_bonded_pairs=self.exclude_bonded_pairs, particles=self.particles,
                     density=self.particles/np.prod(self._box), seed=self.seed,
                     cutoff=self.cutoff, skin=self.skin, friction=self.friction,
                     pressure_time=self.pressure_time, storage_name=self.storage_name, **self.settings)
@@ -224,7 +233,7 @@ class MDSimulation:
     def _save_checkpoint(self, path):
         with (path/'checkpoint.tmp').open('wb') as stream:
             np.savez_compressed(stream, positions=self._x, velocities=self._v,
-                unwrapped=self._u, masses=self._mass, box=self._box,
+                unwrapped=self._u, masses=self._mass, box=self._box, species=self.system._species,
                 rng=np.uint64(self._rng), step=self.step, time=self.time,
                 heat_added=self.heat_added, barostat_rate=self._rate, barostat_mass=self._baromass)
         (path/'checkpoint.tmp').replace(path/'checkpoint.npz')
@@ -242,7 +251,7 @@ class MDSimulation:
         c.setdefault('pair_potential', 'lj' if c['model'] == 'atomic' else 'lj96')
         bond_args = {'bond': read_bond(c.pop('bond'))} if 'bond' in c else {}
         with np.load(run.path/'checkpoint.npz', allow_pickle=False) as data:
-            system=System(data['positions'],data['box'],velocities=data['velocities'],masses=data['masses'],model=c.pop('model'),**bond_args)
+            system=System(data['positions'],data['box'],velocities=data['velocities'],masses=data['masses'],model=c.pop('model'),species=data['species'] if 'species' in data else None,**bond_args)
             obj=cls(system,**c)
             for attr, key in (('_x','positions'),('_v','velocities'),('_u','unwrapped'),('_mass','masses'),('_box','box')):
                 getattr(obj,attr)[:] = data[key]
@@ -305,6 +314,7 @@ class MDSimulation:
                     created_at=datetime.now(timezone.utc).isoformat(), status='running',
                     configuration={**self._config(), 'storage_name': storage_name}, atoms=len(self._x),
                     molecules=self.particles if self.model != 'atomic' else 0,
+                    atom_species=self.system._species.tolist(),
                     degrees_of_freedom=self.dof, units='fixed reduced reference units: length=energy=mass=kB=1',
                     potential_shifted=True, pressure_estimator='atomic virial' if self.model == 'atomic' else 'molecular COM virial',
                     start_step=start, start_time=self.time, requested_steps=steps,

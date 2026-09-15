@@ -33,3 +33,14 @@ The dilute free-rotation test now uses rho=1e-8: the former density allowed
 transient collisions after velocity seeds were separated from geometry seeds.
 Docs use pyplot directly, and the static notebook auto-sizes with the page.
 The public notebook remains a separate crystal/gas showcase, not a lab solution.
+
+Later the same day: species mappings specify exact counts (N is inferred), and
+geometry accepts per-species masses. MDSimulation epsilon/sigma accept scalars
+or complete species mappings, with explicit Lorentz–Berthelot mixing. Everything
+uses shared LJ reduced reference units. Molecular geometry makes homonuclear
+pairs; explicit System arrays also support heteronuclear pairs with unequal
+masses. Per-species colors and radii work in live/saved viewers. The executed
+notebook now includes mixture and bonded demonstrations plus direct pyplot.
+37 tests pass, including mixture forces, mass acceleration, equipartition and
+checkpoint restoration. Historical lab files were removed with targeted filtering;
+private bundle backups are in the teaching repository's .git/md-history-backups.

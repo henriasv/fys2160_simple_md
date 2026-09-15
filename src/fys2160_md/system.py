@@ -43,6 +43,7 @@ class Atoms:
     velocities: np.ndarray | None
     masses: np.ndarray
     molecule_ids: np.ndarray
+    species: np.ndarray
 
     def __len__(self):
         return len(self.positions)
@@ -55,7 +56,7 @@ class System:
     its own copy. All public array accessors return read-only snapshots.
     """
 
-    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None):
+    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None):
         model, bond = resolve_model(model, molecule, bond)
         self._bond = bond
         x=np.array(positions,dtype=float,order='C',copy=True)
@@ -68,6 +69,13 @@ class System:
             raise ValueError(f'model must be one of {tuple(MODELS)}')
         if model!='atomic' and len(x)%2:
             raise ValueError('Diatomic models require an even number of atoms.')
+        labels = np.asarray('A' if species is None else species)
+        if labels.ndim == 0: labels = np.repeat(labels, len(x))
+        if labels.shape != (len(x),) or labels.dtype.kind not in 'US':
+            raise ValueError('species must be a name or one string label per atom.')
+        if any(not str(name).strip() or str(name) != str(name).strip() for name in labels):
+            raise ValueError('Species names must be nonempty strings without surrounding spaces.')
+        self._species = labels.astype(str, copy=True)
         self._model=model
         self._N=_integer(len(x) if model=='atomic' else len(x)//2,'N',2)
         self._box=lengths
@@ -75,8 +83,7 @@ class System:
         self._mass=np.ones(len(x)) if masses is None else np.array(masses,dtype=float,order='C',copy=True)
         if self._mass.shape!=(len(x),) or not np.isfinite(self._mass).all() or np.any(self._mass<=0):
             raise ValueError('masses must be a positive finite (N,) array.')
-        if model!='atomic' and not np.all(self._mass==self._mass[0]):
-            raise ValueError('Diatomic models currently require equal atom masses.')
+
         self._v=None if velocities is None else np.array(velocities,dtype=float,order='C',copy=True)
         if self._v is not None and (self._v.shape!=x.shape or not np.isfinite(self._v).all()):
             raise ValueError('velocities must be a finite (N,3) array.')
@@ -89,12 +96,20 @@ class System:
                 raise ValueError('Rigid bond relative velocities must be perpendicular to the bonds.')
 
     @property
+    def species(self):
+        return tuple(dict.fromkeys(self._species.tolist()))
+
+    @property
     def bond(self):
         return self._bond
 
     @property
     def molecule(self):
         return None if self.model == 'atomic' else 'diatomic'
+
+    @property
+    def species(self):
+        return tuple(dict.fromkeys(self._species.tolist()))
 
     @property
     def bonds(self):
@@ -121,7 +136,7 @@ class System:
     @property
     def atoms(self):
         ids=np.arange(len(self._x))//(1 if self.model=='atomic' else 2)
-        return Atoms(_readonly(self._x),_readonly(self._v),_readonly(self._mass),_readonly(ids))
+        return Atoms(_readonly(self._x),_readonly(self._v),_readonly(self._mass),_readonly(ids),_readonly(self._species))
 
     @property
     def dof(self):
@@ -129,11 +144,11 @@ class System:
 
     def copy(self):
         """Independent copy of geometry and any supplied velocities."""
-        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond)
+        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species)
 
     @classmethod
-    def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None):
-        return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond)
+    def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None):
+        return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species)
 
     def __repr__(self):
         return f'System(model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None})'

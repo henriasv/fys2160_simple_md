@@ -1,7 +1,7 @@
 # Physics & validation
 
-All quantities use reduced units with reference mass, sigma, epsilon and kB
-set to one. **All energies in `thermo.csv` are totals**, unlike LAMMPS's default
+All quantities use LJ reduced units with reference mass, sigma_ref, epsilon_ref
+and kB set to one. Species parameters are relative to these fixed references. **All energies in `thermo.csv` are totals**, unlike LAMMPS's default
 per-atom thermodynamic energies in LJ units. Divide by `system.N` to get energy
 per atom or per molecule. `atom_density` is also recorded to expose that distinction.
 
