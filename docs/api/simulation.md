@@ -59,7 +59,7 @@ The earlier static `Simulation.run(system, ...)` pattern is replaced by an insta
 ```python
 sim.run(timestep=None, steps=1000, *,
         ensemble=None, temperature=None, heat_rate=None, pressure=None,
-        sample_every=100, save_every=500, show=False, max_fps=None,
+        thermo_every=100, trajectory_every=500, show=False, max_fps=None,
         frame_every=100, storage_name=None)
 ```
 
@@ -71,8 +71,8 @@ sim.run(timestep=None, steps=1000, *,
 | `temperature` | New thermostat target; does not instantly reset velocities |
 | `pressure` | Pressure-control target, atomic NPH/NPT only |
 | `heat_rate` | Total energy per reduced time; positive heats, negative cools |
-| `sample_every` | Record thermodynamic quantities at this interval, in steps |
-| `save_every` | Save particle frames at this interval; None disables frames |
+| `thermo_every` | Record thermodynamic quantities at this interval, in steps |
+| `trajectory_every` | Save particle frames at this interval; None disables frames |
 | `show` | Display one live notebook widget while running |
 | `max_fps` | Optional positive frame-rate cap; paces MD when show=True |
 | `frame_every` | MD steps between live snapshots, independent of disk sampling |
@@ -81,6 +81,18 @@ sim.run(timestep=None, steps=1000, *,
 Omitted physical settings persist. In particular, **set `heat_rate=0` to stop
 heating**. Adding heat with an active thermostat is rejected. With heat input,
 `nve` means fixed-volume dynamics without a thermostat, not constant energy.
+
+### Thermodynamic measurements versus trajectory frames
+
+`thermo_every` records temperature, pressure and energy in `thermo.csv`.
+`trajectory_every` saves particle snapshots for replay and later particle analysis.
+Both intervals count integration steps; neither changes the physical timestep.
+Initial and final outputs are also saved. Use `trajectory_every=None` to omit
+particle frames while retaining measurements and the final restart checkpoint.
+`frame_every` is separate: it controls live display updates when `show=True`.
+
+The earlier names `sample_every` and `save_every` remain accepted as aliases.
+Do not pass both names for the same option. New examples use the descriptive names.
 
 ## Current state and restart
 

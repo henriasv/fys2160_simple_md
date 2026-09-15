@@ -129,13 +129,13 @@ class SolverTests(unittest.TestCase):
 
     def test_saved_run_reload_resume_and_sampling_independence(self):
         s=self.sim(N=32,model='diatomic-rigid')
-        a=s.run(storage_name="first",steps=251,sample_every=43,save_every=97)
+        a=s.run(storage_name="first",steps=251,thermo_every=43,trajectory_every=97)
         self.assertEqual(a.metadata['completed_steps'],251)
         self.assertEqual(a.thermo.step.tolist(),[0,43,86,129,172,215,251])
         self.assertEqual([int(f['step']) for f in a.iter_frames()],[0,97,194,251])
         resumed=Simulation.from_run(a)
-        s.run(storage_name="continued",steps=333,sample_every=100,save_every=None)
-        resumed.run(storage_name="restarted",steps=333,sample_every=17,save_every=71)
+        s.run(storage_name="continued",steps=333,thermo_every=100,trajectory_every=None)
+        resumed.run(storage_name="restarted",steps=333,thermo_every=17,trajectory_every=71)
         np.testing.assert_allclose(s.atoms.positions,resumed.atoms.positions,atol=1e-12)
         np.testing.assert_allclose(s.atoms.velocities,resumed.atoms.velocities,atol=1e-12)
         self.assertEqual(len(Run.find(self.root)),3)
@@ -152,7 +152,7 @@ class SolverTests(unittest.TestCase):
             if args[6]:result[4]=1
             return tuple(result)
         with patch.object(_core, 'advance', interrupted_advance):
-            run=s.run(steps=1000,sample_every=100)
+            run=s.run(steps=1000,thermo_every=100)
         self.assertEqual(run.metadata['status'],'interrupted')
         self.assertEqual(run.metadata['completed_steps'],100)
         self.assertEqual(int(run.thermo.step.iloc[-1]),100)

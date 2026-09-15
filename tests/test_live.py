@@ -49,13 +49,13 @@ class LiveTests(unittest.TestCase):
     def test_pacing_keeps_physics_and_recording_independent(self):
         with tempfile.TemporaryDirectory() as root:
             baseline=Simulation(FCC(N=32), output_dir=root)
-            a=baseline.run(storage_name="baseline",steps=250,sample_every=70,save_every=110)
+            a=baseline.run(storage_name="baseline",steps=250,thermo_every=70,trajectory_every=110)
             paced=Simulation(FCC(N=32), output_dir=root)
             clock=Clock()
             with patch('fys2160_md.visualization.LiveView',RecordingView), \
                  patch('fys2160_md.visualization.time.monotonic',clock.monotonic), \
                  patch('fys2160_md.visualization.time.sleep',clock.sleep):
-                b=paced.run(storage_name="paced",steps=250,sample_every=70,save_every=110,
+                b=paced.run(storage_name="paced",steps=250,thermo_every=70,trajectory_every=110,
                             show=True,max_fps=5,frame_every=100)
             view=RecordingView.instances[-1]
             self.assertEqual(view.sent_steps,[100,200,250])
@@ -107,9 +107,9 @@ class StorageTests(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as root:
             sim=Simulation(FCC(N=32), output_dir=root, storage_name='my-gas')
-            first=sim.run(steps=500,save_every=50)
+            first=sim.run(steps=500,trajectory_every=50)
             self.assertEqual(len(list(first.iter_frames())),11)
-            second=sim.run(steps=10,save_every=None)
+            second=sim.run(steps=10,trajectory_every=None)
             self.assertEqual(first.path,second.path)
             self.assertEqual(second.path,Path(root).resolve()/'my-gas')
             self.assertEqual(list(second.iter_frames()),[])

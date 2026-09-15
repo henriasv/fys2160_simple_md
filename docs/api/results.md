@@ -57,7 +57,7 @@ runs/gas/
 ```
 
 Frame arrays include positions, unwrapped coordinates, velocities, box, step and
-time. A final checkpoint is kept even when `save_every=None`.
+time. A final checkpoint is kept even when `trajectory_every=None`.
 
 ```python
 sim = MDSimulation.from_run(saved)

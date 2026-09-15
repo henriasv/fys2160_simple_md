@@ -65,7 +65,7 @@ static int needs_rebuild(const Neighbors *nb, int n, const double *u,
 /* Independent nonbonded LJ selection and bonded-pair exclusion.
    Flexible bonds use a polynomial (including the harmonic special case). */
 static int forces(const Neighbors *nb, int n, const double *x, const double *box,
-                  double cutoff, int model, int pair, double epsilon, double sigma, const double *parameters, int exclude, double length, double k2, double k3, double k4, double *f, double *potential, double *virial) {
+                  double cutoff, int model, int pair, double epsilon, double sigma, const double *parameters, int exclude, double length, double k2, double k3, double k4, const double *bond_parameters, double *f, double *potential, double *virial) {
     memset(f, 0, (size_t)n * 3 * sizeof(double));
     *potential = 0; *virial = 0;
 
@@ -103,6 +103,7 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
         }
     }
     if(model==1)for(int i=0;i<n;i+=2) {
+        if(bond_parameters){const double *b=bond_parameters+4*(i/2);length=b[0];k2=b[1];k3=b[2];k4=b[3];}
         double dr[3],r2=0;
         for(int d=0;d<3;++d){dr[d]=minimum_image(x[3*i+d]-x[3*(i+1)+d],box[d]);r2+=dr[d]*dr[d];}
         double r=sqrt(r2),q=r-length;
@@ -169,8 +170,9 @@ static double constrain_velocities(int n,double *v,const double *x,const double 
 }
 /* RATTLE position constraint: correction along the bond at the start of drift. */
 static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
-                       const double *mass,double dt,double length,double *impulse_virial) {
+                       const double *mass,double dt,double length,const double *bond_parameters,double *impulse_virial) {
     for(int i=0;i<n;i+=2) {
+        if(bond_parameters)length=bond_parameters[4*(i/2)];
         double old[3],trial[3],old2=0,trial2=0,dot=0;
         for(int d=0;d<3;++d){
             old[d]=minimum_image(x[3*i+d]-x[3*(i+1)+d],box[d]);
@@ -223,9 +225,9 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
 
 static PyObject *advance(PyObject *self, PyObject *args) {
     (void)self;
-    PyObject *objects[6], *result = NULL, *parameter_object=NULL;
-    Py_buffer parameter_buffer={0};
-    const double *parameters=NULL;
+    PyObject *objects[6], *result = NULL, *parameter_object=NULL, *bond_object=NULL;
+    Py_buffer parameter_buffer={0}, bond_buffer={0};
+    const double *parameters=NULL, *bond_parameters=NULL;
     Py_buffer buffers[6] = {{0}};
     int requested, done = 0, interrupted = 0;
     double dt, cutoff, skin, T, gamma, heat, targetP, baromass, rate, potential=0, virial=0;
@@ -233,9 +235,9 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
     Neighbors nb = {0};
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddO", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOO", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object)) return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
         int flags = PyBUF_C_CONTIGUOUS | PyBUF_FORMAT | (k<5 ? PyBUF_WRITABLE : 0);
@@ -266,6 +268,26 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             uintptr_t a=(uintptr_t)parameter_buffer.buf,b=(uintptr_t)buffers[i].buf;
             if(a<b+buffers[i].len && b<a+parameter_buffer.len){
                 PyErr_SetString(PyExc_ValueError,"Pair parameters must not overlap mutable state.");goto cleanup;
+            }
+        }
+    }
+    if(bond_object){
+        if(PyObject_GetBuffer(bond_object,&bond_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT)<0)goto cleanup;
+        int count=model?n/2:0;
+        if(bond_buffer.ndim!=2 || bond_buffer.shape[0]!=count || bond_buffer.shape[1]!=4 ||
+           bond_buffer.itemsize!=sizeof(double) || !bond_buffer.format || strcmp(bond_buffer.format,"d")!=0){
+            PyErr_SetString(PyExc_ValueError,"Bond parameters must be a contiguous float64 (number of bonds,4) array.");goto cleanup;
+        }
+        bond_parameters=bond_buffer.buf;
+        for(int i=0;i<count;++i){const double *b=bond_parameters+4*i;
+            if(!(b[0]>0)||b[1]<0||b[3]<0||!isfinite(b[0]+b[1]+b[2]+b[3])){
+                PyErr_SetString(PyExc_ValueError,"Invalid bond parameters.");goto cleanup;
+            }
+        }
+        for(int i=0;i<5;++i){
+            uintptr_t a=(uintptr_t)bond_buffer.buf,b=(uintptr_t)buffers[i].buf;
+            if(a<b+buffers[i].len && b<a+bond_buffer.len){
+                PyErr_SetString(PyExc_ValueError,"Bond parameters must not overlap mutable state.");goto cleanup;
             }
         }
     }
@@ -300,7 +322,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     nb.reference = malloc((size_t)n*3*sizeof(double));
     if(!nb.reference) {PyErr_NoMemory();goto cleanup;}
-    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,f,&potential,&virial)<0) goto cleanup;
+    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
     double dof=3*n-3-(model==2?n/2:0), pressure_numerator=0;
     /* Symmetric isotropic pressure-control splitting. rate = d(log L)/dt.
@@ -323,12 +345,12 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         if(gamma>0) {
-            if(model==2){if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,&constraint_impulse)<0)goto cleanup;}
+            if(model==2){if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
             else if(drift(n,x,u,v,box,0.5*dt)<0)goto cleanup;
             thermostat(n,v,mass,T,gamma,dt,&rng);
-            if(model==2){constrain_velocities(n,v,x,box,mass);if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,&constraint_impulse)<0)goto cleanup;}
+            if(model==2){constrain_velocities(n,v,x,box,mass);if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
             else if(drift(n,x,u,v,box,0.5*dt)<0)goto cleanup;
-        } else if(model==2){if(rigid_drift(n,x,u,v,box,mass,dt,length,&constraint_impulse)<0)goto cleanup;}
+        } else if(model==2){if(rigid_drift(n,x,u,v,box,mass,dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
         else if(drift(n,x,u,v,box,dt)<0)goto cleanup;
         if(targetP>=0){
             double factor=exp(0.5*dt*rate);
@@ -336,7 +358,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         if(needs_rebuild(&nb,n,u,box,cutoff,skin) && build_neighbors(&nb,n,x,u,box,cutoff+skin)<0)goto cleanup;
-        if(forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,f,&potential,&virial)<0)goto cleanup;
+        if(forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
         kick(n,v,f,mass,0.5*dt);
         if(model==2)constrain_velocities(n,v,x,box,mass);
         if(targetP>=0){
@@ -361,6 +383,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
 
 cleanup:
+    if(bond_buffer.obj)PyBuffer_Release(&bond_buffer);
     if(parameter_buffer.obj)PyBuffer_Release(&parameter_buffer);
     free(nb.pairs);free(nb.reference);
     for(int k=0;k<6;++k) if(buffers[k].obj) PyBuffer_Release(&buffers[k]);

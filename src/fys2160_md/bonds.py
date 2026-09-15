@@ -1,6 +1,7 @@
 """Explicit intramolecular bonds; lengths and energies are in reduced units."""
 from dataclasses import dataclass, asdict
 import math
+from collections.abc import Mapping
 
 
 def _positive(value, name):
@@ -49,14 +50,23 @@ class Class2Bond:
 def resolve_model(model=None, molecule=None, bond=None):
     if model is not None and molecule is not None:
         raise ValueError('Specify molecule and bond, or the legacy model, not both.')
-    if bond is not None and not isinstance(bond, (HarmonicBond, RigidBond, Class2Bond)):
+    if isinstance(bond, Mapping):
+        if not bond or any(not isinstance(k,str) or not k.strip() or k!=k.strip() for k in bond):
+            raise ValueError('bond mapping must have nonempty species names.')
+        bond = dict(bond)
+        if any(not isinstance(b, (HarmonicBond, RigidBond, Class2Bond)) for b in bond.values()):
+            raise TypeError('Each species bond must be HarmonicBond, RigidBond or Class2Bond.')
+        rigid = [isinstance(b, RigidBond) for b in bond.values()]
+        if any(rigid) and not all(rigid):
+            raise ValueError('Use either rigid bonds for all species or flexible bonds for all species.')
+    if bond is not None and not isinstance(bond, (HarmonicBond, RigidBond, Class2Bond, dict)):
         raise TypeError('bond must be HarmonicBond, RigidBond or Class2Bond.')
     if model is not None:
         if model not in ('atomic', 'diatomic-flexible', 'diatomic-rigid'):
             raise ValueError('Unknown model.')
         if bond is None:
             bond = {'atomic': None, 'diatomic-flexible': Class2Bond(), 'diatomic-rigid': RigidBond()}[model]
-        expected = 'atomic' if bond is None else ('diatomic-rigid' if isinstance(bond, RigidBond) else 'diatomic-flexible')
+        expected = 'atomic' if bond is None else ('diatomic-rigid' if is_rigid(bond) else 'diatomic-flexible')
         if model != expected:
             raise ValueError('model and bond disagree.')
         return model, bond
@@ -67,10 +77,12 @@ def resolve_model(model=None, molecule=None, bond=None):
             raise ValueError('Set molecule="diatomic" when specifying a bond.')
         return 'atomic', None
     bond = HarmonicBond() if bond is None else bond
-    return ('diatomic-rigid' if isinstance(bond, RigidBond) else 'diatomic-flexible'), bond
+    return ('diatomic-rigid' if is_rigid(bond) else 'diatomic-flexible'), bond
 
 
 def bond_config(bond):
+    if isinstance(bond, dict):
+        return {'kind': 'per-species', 'bonds': {name: bond_config(b) for name,b in bond.items()}}
     return None if bond is None else {'kind': type(bond).__name__, **asdict(bond)}
 
 
@@ -79,4 +91,25 @@ def read_bond(config):
         return None
     args = config.copy()
     kind = args.pop('kind')
+    if kind == 'per-species':
+        return {name: read_bond(b) for name,b in args['bonds'].items()}
     return {'HarmonicBond': HarmonicBond, 'RigidBond': RigidBond, 'Class2Bond': Class2Bond}[kind](**args)
+
+
+def is_rigid(bond):
+    return all(isinstance(b, RigidBond) for b in bond.values()) if isinstance(bond, dict) else isinstance(bond, RigidBond)
+
+
+def bonds_for_species(bond, labels):
+    """Resolve one immutable bond description per homonuclear molecule."""
+    if isinstance(bond, dict):
+        if set(bond) != set(labels):
+            raise ValueError(f'bond must specify exactly these molecular species: {list(dict.fromkeys(labels))}.')
+        return tuple(bond[name] for name in labels)
+    return (bond,)*len(labels)
+
+
+def coefficients(bond):
+    if isinstance(bond,HarmonicBond): return (bond.length,bond.stiffness/2,0.,0.)
+    if isinstance(bond,Class2Bond): return (bond.length,bond.k2,bond.k3,bond.k4)
+    return (bond.length,0.,0.,0.)

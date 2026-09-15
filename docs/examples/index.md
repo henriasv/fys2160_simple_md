@@ -4,6 +4,9 @@ The [executed notebook](notebook.md) shows a crystal, a gas, a mixture and bonde
 with recorded plots and working particle replays. These are standalone examples
 of the interface, not worked course exercises.
 
+See also the [worked NPT temperature sweep](isobar.md): measurements of pressure,
+volume and Z at one fixed pressure, with saved data and pyplot figures.
+
 ## Settings to change
 
 Each complete example writes out the standard physical and recording settings.
@@ -16,11 +19,11 @@ All values use the same LJ reduced reference units.
 | `timestep=0.005` | Integration step for atomic examples; molecules use 0.002 |
 | `cutoff=2.5` | Pair-interaction range in reference length units |
 | `steps=10_000` | Number of integration steps; at timestep 0.005 this is time 50 |
-| `sample_every=100` | Record thermodynamic data every 100 MD steps |
-| `save_every=500` | Save particle coordinates every 500 MD steps for replay |
+| `thermo_every=100` | Record thermodynamic data every 100 MD steps |
+| `trajectory_every=500` | Save particle coordinates every 500 MD steps for replay |
 | `storage_name="gas"` | Saved run folder; using the name again replaces its contents |
 
-`sample_every` and `save_every` control output, not the integration timestep.
+`thermo_every` and `trajectory_every` control output, not the integration timestep.
 Repeated `sim.run(...)` calls continue the same simulation and retain its physical
 settings. Thermostat coupling (`friction=1`), random seed (`seed=87287`) and other
 controls are described in the [API reference](../api/simulation.md).
@@ -46,13 +49,13 @@ sim = MDSimulation(
 # Equilibrate, then record a measurement run under the same conditions.
 sim.run(
     steps=10_000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
 )
 result = sim.run(
     steps=10_000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
 )  # The same storage name replaces the equilibration output.
 print(result.thermo.compressibility_factor.mean())
 data = result.thermo
@@ -88,8 +91,8 @@ sim = MDSimulation(
 result = sim.run(
     steps=1000,
     heat_rate=1,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="warming",
 )
 data = result.thermo
@@ -122,8 +125,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=5000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="molecules",
 )
 result.view(projection="perspective")
@@ -155,8 +158,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=10_000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
 )
 data = result.thermo
 plt.figure(figsize=(8, 5))
@@ -214,8 +217,8 @@ sim = MDSimulation(
 )
 mixture = sim.run(
     steps=3000,
-    sample_every=100,
-    save_every=30,
+    thermo_every=100,
+    trajectory_every=30,
     storage_name="mixture",
 )
 mixture.view(max_frames=101, projection="perspective")
@@ -255,5 +258,74 @@ system = Random(species={"A": 24, "B": 8}, rho=.01,
 ```
 
 This creates 24 A–A and 8 B–B molecules, with masses 2 and 8 per molecule.
-They share the selected bond model. Use explicit System arrays for heteronuclear
+This version shares one bond; the next example assigns a separate bond to each species. Use explicit System arrays for heteronuclear
 molecules; consecutive atom pairs are bonded.
+
+## An air-like mixture with different bonds
+
+Species can have separate bond lengths as well as masses and LJ parameters.
+Here 80 N2-like and 20 O2-like molecules contain 200 atoms. The composition and
+interaction/bond values are illustrative teaching choices, not a calibrated
+model of air. Names are labels; they do not load physical parameters.
+
+Both species share LJ reference units. Masses are per atom: a nitrogen atom is
+the mass reference, and an oxygen atom has approximately 16/14 times that mass.
+Each molecule's bond remains at its own specified length. The LJ exclusion
+applies to the two connected atoms, not to other molecules of the same species.
+
+```python
+from fys2160_md import Random, MDSimulation, RigidBond
+
+# Illustrative reduced parameters, not a fitted force field for real air.
+air = Random(
+    species={"N2": 80, "O2": 20},
+    masses={"N2": 1, "O2": 16/14},  # per atom, relative to nitrogen
+    molecule="diatomic",
+    bond={
+        "N2": RigidBond(length=0.65),
+        "O2": RigidBond(length=0.75),
+    },
+    rho=0.01,
+    min_distance=1.1,
+)
+sim = MDSimulation(
+    air,
+    pair_potential="lj",
+    epsilon={"N2": 1, "O2": 0.9},
+    sigma={"N2": 1, "O2": 1.05},
+    mixing_rule="lorentz-berthelot",
+    exclude_bonded_pairs=True,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.002,
+    cutoff=2.5,
+)
+result = sim.run(
+    steps=3000,
+    thermo_every=100,
+    trajectory_every=30,
+    storage_name="air-like",
+)
+result.view(max_frames=101, projection="perspective")
+```
+
+To model vibrations, replace the bond mapping when constructing the system:
+
+```python
+from fys2160_md import HarmonicBond
+
+bonds = {
+    "N2": HarmonicBond(length=0.65, stiffness=120),
+    "O2": HarmonicBond(length=0.75, stiffness=80),
+}
+```
+
+Use `bond=bonds` in Random or FCC. These stiffnesses are illustrative too.
+Each species can have its own spring or Class2Bond coefficients, but a simulation
+must use either all rigid or all flexible bonds. A stiffer spring can require a
+shorter timestep; check energy conservation in NVE before interpreting results.
+
+For a quantitative model, choose a published force field suitable for the
+properties of interest and convert all its parameters into the **same** LJ
+reference units. This classical bonded-LJ solver does not automatically supply
+real nitrogen/oxygen material parameters. It also does not include trace air components.

@@ -95,3 +95,26 @@ No cross-pair overrides are currently provided.
 Masses belong to the System; they affect acceleration and thermal velocities,
 not the potential function. Inspect `system.atoms.species` and `.masses`.
 See [mixture examples](../examples/index.md#a-mixture-with-different-masses-and-interactions).
+
+## A separate bond for each molecular species
+
+```python
+bond = {
+    "N2": RigidBond(length=0.65),
+    "O2": RigidBond(length=0.75),
+}
+```
+
+Pass this mapping to `Random`, `FCC` or `System` with `molecule="diatomic"`.
+Keys must match every molecular species exactly. These lengths are examples,
+not physical parameters for air. Each homonuclear molecule uses the bond for its
+species, including during integration and after checkpoint restart.
+
+For flexible molecules, use separate `HarmonicBond(length=..., stiffness=...)`
+or `Class2Bond(...)` entries. All entries must be rigid or all must be flexible;
+mixing constrained and flexible molecules in one simulation is not supported.
+Per-species mappings require homonuclear partners. Explicit heteronuclear pairs
+continue to support a shared bond description. `system.bond` returns a copy of
+the mapping; editing it does not change the system or a running simulation.
+
+See the [air-like example](../examples/index.md#an-air-like-mixture-with-different-bonds).

@@ -51,3 +51,18 @@ private bundle backups are in the teaching repository's .git/md-history-backups.
 recipes, installation, overview, geometry examples and README. Brief explanations
 distinguish integration timestep, total duration and output intervals. Numerical
 values and package defaults are unchanged.
+
+2026-09-15: Per-species bond mappings are supported throughout geometry, C forces,
+RATTLE lengths and checkpoint restart. All bonds must be rigid or all flexible;
+per-species maps require homonuclear partners. Shared bonds still support
+heteronuclear explicit arrays. The public notebook includes an explicitly
+illustrative air-like mixture. Output options are now thermo_every and
+trajectory_every; sample_every/save_every remain aliases, with conflicting names
+rejected. Canonical names are used in metadata and all public examples.
+
+The worked NPT example examples/isobar.ipynb varies T=1.5,2,2.5,3 at P=0.05,
+with separate equilibration and production, disk reloading, pyplot P/V/Z curves,
+production traces and playback. It estimates Z using target P,T and mean V;
+measured P,T are separate control checks. Both notebooks execute in build_docs.py.
+41 solver/API tests and viewer controls pass; per-species spring and constraint
+checks include save/restart and recording-name compatibility.

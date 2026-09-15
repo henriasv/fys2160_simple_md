@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
-from .bonds import resolve_model
+from .bonds import resolve_model, bonds_for_species, coefficients
 
 MODELS = {'atomic': 0, 'diatomic-flexible': 1, 'diatomic-rigid': 2}
 
@@ -76,6 +76,12 @@ class System:
         if any(not str(name).strip() or str(name) != str(name).strip() for name in labels):
             raise ValueError('Species names must be nonempty strings without surrounding spaces.')
         self._species = labels.astype(str, copy=True)
+        if isinstance(bond,dict) and np.any(self._species[::2] != self._species[1::2]):
+            raise ValueError('Per-species bonds require homonuclear pairs; use a shared bond for heteronuclear molecules.')
+        self._bond_specs = () if model == 'atomic' else bonds_for_species(bond, self._species[::2])
+        self._bond_parameters = np.array([coefficients(b) for b in self._bond_specs],dtype=float).reshape(-1,4)
+        if len(self._bond_parameters) and np.any(self._bond_parameters[:,0]>=min(lengths)/2):
+            raise ValueError('Bond length must be less than half the shortest box side.')
         self._model=model
         self._N=_integer(len(x) if model=='atomic' else len(x)//2,'N',2)
         self._box=lengths
@@ -90,8 +96,8 @@ class System:
         if model=='diatomic-rigid':
             bond=self._x[::2]-self._x[1::2]
             bond-=lengths*np.rint(bond/lengths)
-            if not np.allclose(np.linalg.norm(bond,axis=1),self.bond.length,atol=1e-10,rtol=0):
-                raise ValueError(f'Rigid bonds must have length {self.bond.length:g}.')
+            if not np.allclose(np.linalg.norm(bond,axis=1),self._bond_parameters[:,0],atol=1e-10,rtol=0):
+                raise ValueError('Rigid bonds must have their specified lengths.')
             if self._v is not None and np.max(np.abs((bond*(self._v[::2]-self._v[1::2])).sum(axis=1)))>1e-10:
                 raise ValueError('Rigid bond relative velocities must be perpendicular to the bonds.')
 
@@ -101,15 +107,11 @@ class System:
 
     @property
     def bond(self):
-        return self._bond
+        return self._bond.copy() if isinstance(self._bond,dict) else self._bond
 
     @property
     def molecule(self):
         return None if self.model == 'atomic' else 'diatomic'
-
-    @property
-    def species(self):
-        return tuple(dict.fromkeys(self._species.tolist()))
 
     @property
     def bonds(self):

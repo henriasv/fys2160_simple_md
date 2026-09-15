@@ -1,6 +1,6 @@
 """Periodic geometry constructors, independent of the simulation runner."""
 import numpy as np
-from .bonds import resolve_model
+from .bonds import resolve_model, bonds_for_species
 from .species import species_counts, parameter, per_atom
 from .system import System, MODELS, _integer, _positive
 
@@ -29,11 +29,12 @@ def _rng(seed):
     return np.random.default_rng(seed)
 
 
-def _atoms(centers, lengths, model, rng, bond):
+def _atoms(centers, lengths, model, rng, bond_lengths):
     if model=='atomic':return centers
     directions=rng.normal(size=(len(centers),3))
     directions/=np.linalg.norm(directions,axis=1)[:,None]
-    return np.stack((centers-bond.length/2*directions,centers+bond.length/2*directions),axis=1).reshape(-1,3)%lengths
+    half_length=np.asarray(bond_lengths).reshape(-1,1)/2
+    return np.stack((centers-half_length*directions,centers+half_length*directions),axis=1).reshape(-1,3)%lengths
 
 
 def FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287):
@@ -46,7 +47,8 @@ def FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, spe
     N, labels = species_counts(N, species)
     model, bond = resolve_model(model, molecule, bond)
     N,lengths=_box(N,rho,box,model)
-    if bond is not None and bond.length >= min(lengths)/2:
+    specs = () if model=='atomic' else bonds_for_species(bond, labels)
+    if any(b.length >= min(lengths)/2 for b in specs):
         raise ValueError('Bond length must be less than half the shortest box side.')
     lattice_constant=(4*np.prod(lengths)/N)**(1/3)
     ratios=lengths/lattice_constant
@@ -58,12 +60,13 @@ def FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, spe
         raise ValueError('A rectangular FCC box must contain integer numbers of equal-sized conventional cells, with N=4*nx*ny*nz. Adjust N or the box aspect ratio.')
     rng=_rng(seed)
     if len(set(labels)) > 1: rng.shuffle(labels)
+    bond_lengths = [] if model=='atomic' else [b.length for b in bonds_for_species(bond, labels)]
     labels = np.repeat(labels, 1 if model == 'atomic' else 2)
     mass_values = per_atom(parameter(masses, tuple(dict.fromkeys(labels.tolist())), 'masses'), labels)
     bases=np.array([[0,0,0],[0,.5,.5],[.5,0,.5],[.5,.5,0]])
     sites=(np.indices(tuple(cells)).reshape(3,-1).T[:,None,:]+bases).reshape(-1,3)
     centers=(sites+.25)*lattice_constant
-    return System(_atoms(centers,lengths,model,rng,bond),lengths,model=model,bond=bond,species=labels,masses=mass_values)
+    return System(_atoms(centers,lengths,model,rng,bond_lengths),lengths,model=model,bond=bond,species=labels,masses=mass_values)
 
 
 def Random(*, N=None, rho=None, box=None, min_distance=.9, max_attempts=1000,
@@ -77,12 +80,14 @@ def Random(*, N=None, rho=None, box=None, min_distance=.9, max_attempts=1000,
     N, labels = species_counts(N, species)
     model, bond = resolve_model(model, molecule, bond)
     N,lengths=_box(N,rho,box,model)
-    if bond is not None and bond.length >= min(lengths)/2:
+    specs = () if model=='atomic' else bonds_for_species(bond, labels)
+    if any(b.length >= min(lengths)/2 for b in specs):
         raise ValueError('Bond length must be less than half the shortest box side.')
     distance=_positive(min_distance,'min_distance')
     attempts=_integer(max_attempts,'max_attempts')
     rng=_rng(seed)
     if len(set(labels)) > 1: rng.shuffle(labels)
+    bond_lengths = [] if model=='atomic' else [b.length for b in bonds_for_species(bond, labels)]
     labels = np.repeat(labels, 1 if model == 'atomic' else 2)
     mass_values = per_atom(parameter(masses, tuple(dict.fromkeys(labels.tolist())), 'masses'), labels)
     per_particle=1 if model=='atomic' else 2
@@ -90,7 +95,7 @@ def Random(*, N=None, rho=None, box=None, min_distance=.9, max_attempts=1000,
     for i in range(N):
         for _ in range(attempts):
             center=rng.uniform(0,lengths,size=(1,3))
-            candidate=_atoms(center,lengths,model,rng,bond)
+            candidate=_atoms(center,lengths,model,rng,bond_lengths[i:i+1])
             dr=candidate[:,None,:]-positions[None,:i*per_particle,:]
             dr-=lengths*np.rint(dr/lengths)
             if np.all(np.sum(dr*dr,axis=2)>=distance**2):

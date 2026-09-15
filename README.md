@@ -4,7 +4,8 @@ A small native C molecular-dynamics engine with a Python interface for learning
 statistical physics. Create a system, run it, then analyse or replay saved results.
 
 **[Documentation & API](https://henriasv.github.io/fys2160_simple_md/)** ·
-**[Executed notebook](https://henriasv.github.io/fys2160_simple_md/examples/notebook/)**
+**[Executed notebook](https://henriasv.github.io/fys2160_simple_md/examples/notebook/)** ·
+**[NPT temperature sweep](https://henriasv.github.io/fys2160_simple_md/examples/isobar/)**
 
 ```sh
 python -m pip install "fys2160-simple-md[notebook] @ git+https://github.com/henriasv/fys2160_simple_md.git"
@@ -30,8 +31,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=10_000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="argon",
 )
 print(result.thermo.compressibility_factor.mean())
@@ -86,8 +87,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=5000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="molecules",
 )
 ```
@@ -115,8 +116,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=3000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="mixture",
 )
 ```
@@ -125,3 +126,19 @@ All species share fixed LJ reference units. Unlike pairs use the explicitly
 named Lorentz–Berthelot mixing rule: arithmetic mean of sigma and geometric mean
 of epsilon. Counts infer N, masses are per atom, and a scalar parameter applies
 to every species. The examples page and executed notebook demonstrate mixtures.
+
+## Different diatomic bonds
+
+```python
+from fys2160_md import RigidBond
+
+system = Random(species={"N2": 80, "O2": 20}, rho=.01,
+                masses={"N2": 1, "O2": 16/14}, molecule="diatomic",
+                bond={"N2": RigidBond(length=.65), "O2": RigidBond(length=.75)})
+```
+
+These are illustrative air-like parameters. Each species can have its own rigid
+length or flexible spring settings; all species must use rigid bonds or all use
+flexible bonds. The [air-like example](https://henriasv.github.io/fys2160_simple_md/examples/#an-air-like-mixture-with-different-bonds)
+shows the full simulation and recording settings. `thermo_every` controls
+thermodynamic output; `trajectory_every` controls saved particle frames.

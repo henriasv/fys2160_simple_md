@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 import csv
+from functools import wraps
 import json
 import shutil
 import time
@@ -11,7 +12,7 @@ from . import _core
 from .system import System, MODELS, _positive, _integer, _readonly
 from .results import Run, write_json
 from .species import parameter, per_atom
-from .bonds import HarmonicBond, Class2Bond, bond_config, read_bond
+from .bonds import bond_config, read_bond
 
 def _storage_name(value):
     if not isinstance(value, str) or not value or value != value.strip() or len(value) > 100:
@@ -34,6 +35,18 @@ def _replace_run_directory(path):
             raise ValueError(f'{path} is not a saved MD run; choose another storage_name.')
         shutil.rmtree(path)
     (path/'frames').mkdir(parents=True)
+
+
+def _legacy_output_names(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        for old, new in [('sample_every', 'thermo_every'), ('save_every', 'trajectory_every')]:
+            if old in kwargs:
+                if new in kwargs:
+                    raise TypeError(f'Use {new}, not both {old} and {new}.')
+                kwargs[new] = kwargs.pop(old)
+        return method(self, *args, **kwargs)
+    return wrapped
 
 
 class MDSimulation:
@@ -63,8 +76,7 @@ class MDSimulation:
         self._pair_potential = pair_potential
         self._exclude_bonded_pairs = exclude_bonded_pairs
         self._system=system.copy()
-        if self.system.bond is not None and self.system.bond.length >= min(self._system._box)/2:
-            raise ValueError('Bond length must be less than half the shortest box side.')
+
         self._x=self._system._x
         self._box=self._system._box
         self._mass=self._system._mass
@@ -191,15 +203,12 @@ class MDSimulation:
 
     def _advance(self, steps):
         c = self._settings
-        bond = self.system.bond
-        length = bond.length if bond is not None else .7
-        k2, k3, k4 = (bond.stiffness/2, 0., 0.) if isinstance(bond, HarmonicBond) else ((bond.k2, bond.k3, bond.k4) if isinstance(bond, Class2Bond) else (0., 0., 0.))
         result = _core.advance(self._x, self._v, self._u, self._f, self._box,
             self._mass, steps, c['timestep'], self.cutoff, self.skin,
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
-            int(self.pair_potential == 'lj96'), int(self.exclude_bonded_pairs), length, k2, k3, k4, 1., 1., self._pair_parameters)
+            int(self.pair_potential == 'lj96'), int(self.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self.system._bond_parameters)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, self._pressure_numerator = result
         self.step += done
         self.time += done*c['timestep']
@@ -265,14 +274,15 @@ class MDSimulation:
         obj._advance(0)
         return obj
 
+    @_legacy_output_names
     def run(self, timestep=None, steps=1000, *, ensemble=None, temperature=None,
-            heat_rate=None, pressure=None, sample_every=100, save_every=500,
+            heat_rate=None, pressure=None, thermo_every=100, trajectory_every=500,
             show=False, max_fps=None, frame_every=100, storage_name=None):
         """Advance and save a run; omitted physical settings retain their values.
 
         Results go to output_dir/storage_name. Reusing a name replaces the old
         result, including its trajectory. The constructor's name is the default.
-        Sampling and trajectory intervals are in steps. ``save_every=None``
+        Sampling and trajectory intervals are in steps. ``trajectory_every=None``
         disables trajectory frames, but preserves thermo and a final checkpoint.
         ``show=True`` gives an interactive live 3D view in a Jupyter notebook.
         ``max_fps`` optionally paces execution at at most that many displayed
@@ -283,9 +293,9 @@ class MDSimulation:
             raise RuntimeError('This simulation failed; create a new one or resume a saved checkpoint.')
         storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
         steps = _integer(steps, 'steps', 0)
-        sample_every = _integer(sample_every, 'sample_every')
-        if save_every is not None:
-            save_every = _integer(save_every, 'save_every')
+        thermo_every = _integer(thermo_every, 'thermo_every')
+        if trajectory_every is not None:
+            trajectory_every = _integer(trajectory_every, 'trajectory_every')
         frame_every = _integer(frame_every, 'frame_every')
         if max_fps is not None:
             max_fps = _positive(max_fps, 'max_fps')
@@ -318,7 +328,7 @@ class MDSimulation:
                     degrees_of_freedom=self.dof, units='fixed reduced reference units: length=energy=mass=kB=1',
                     potential_shifted=True, pressure_estimator='atomic virial' if self.model == 'atomic' else 'molecular COM virial',
                     start_step=start, start_time=self.time, requested_steps=steps,
-                    sample_every=sample_every, save_every=save_every,
+                    thermo_every=thermo_every, trajectory_every=trajectory_every,
                     live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None)
         write_json(path/'metadata.json', meta)
         started = time.monotonic()
@@ -340,23 +350,23 @@ class MDSimulation:
                 writer.writeheader()
                 writer.writerow(self.observables)
                 last_sample = self.step
-                if save_every is not None:
+                if trajectory_every is not None:
                     frame()
                 while self.step-start < steps:
                     elapsed = self.step-start
-                    chunk = min(steps-elapsed, sample_every-elapsed%sample_every, 256)
-                    if save_every is not None:
-                        chunk = min(chunk, save_every-elapsed%save_every)
+                    chunk = min(steps-elapsed, thermo_every-elapsed%thermo_every, 256)
+                    if trajectory_every is not None:
+                        chunk = min(chunk, trajectory_every-elapsed%trajectory_every)
                     if live:
                         chunk = min(chunk, frame_every-elapsed%frame_every)
                     interrupted = self._advance(chunk)
                     elapsed = self.step-start
                     final = elapsed == steps or interrupted
-                    if elapsed%sample_every == 0 or final:
+                    if elapsed%thermo_every == 0 or final:
                         writer.writerow(self.observables)
                         stream.flush()
                         last_sample = self.step
-                    if save_every is not None and (elapsed%save_every == 0 or final):
+                    if trajectory_every is not None and (elapsed%trajectory_every == 0 or final):
                         frame()
                     if live and (elapsed%frame_every == 0 or final):
                         live.update(self, force=final)
@@ -377,7 +387,7 @@ class MDSimulation:
                 if last_sample != self.step:
                     with (path/'thermo.csv').open('a', newline='') as stream:
                         csv.DictWriter(stream, fieldnames=list(self.observables)).writerow(self.observables)
-                if save_every is not None and last_frame != self.step:
+                if trajectory_every is not None and last_frame != self.step:
                     frame()
                 self._save_checkpoint(path)
             meta.update(status=status, completed_steps=self.step-start, end_step=self.step,

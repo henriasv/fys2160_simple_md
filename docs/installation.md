@@ -35,8 +35,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=1000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="first-run",
 )
 data = result.thermo
@@ -53,7 +53,7 @@ plt.show()
 result.view()
 ```
 
-`timestep` sets the integration step; `sample_every` and `save_every` set output
+`timestep` sets the integration step; `thermo_every` and `trajectory_every` set output
 intervals in MD steps. All main settings are explicit so you can edit them.
 
 `show=True` needs the notebook extras and a working widget renderer. The 3D

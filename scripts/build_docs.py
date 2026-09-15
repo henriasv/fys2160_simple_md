@@ -46,18 +46,19 @@ def export(nb):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--execute",action="store_true");args=parser.parse_args()
-    path=ROOT/"examples/quickstart.ipynb";nb=nbformat.read(path,as_version=4)
-    if args.execute:
-        import matplotlib.font_manager  # Build the font cache before recording cells.
-        with tempfile.TemporaryDirectory(prefix="fys2160-docs-") as work:
-            NotebookClient(nb,timeout=180,kernel_name="python3",resources={"metadata":{"path":work}}).execute()
-        nbformat.write(nb,path)
-    if not any(c.get("outputs") for c in nb.cells):
-        raise RuntimeError("Run with --execute first to create the recorded outputs.")
-    target=ROOT/"docs/examples/rendered";target.mkdir(parents=True,exist_ok=True)
-    (target/"quickstart.html").write_text(export(nb))
-    downloads=ROOT/"docs/downloads";downloads.mkdir(parents=True,exist_ok=True)
-    for name in ["quickstart.ipynb"]:shutil.copyfile(ROOT/"examples"/name,downloads/name)
-    print("Static notebook exported with embedded trajectories; no kernel or remote scripts required.")
+    for name in ("quickstart", "isobar"):
+        path=ROOT/"examples"/(name+".ipynb");nb=nbformat.read(path,as_version=4)
+        if args.execute:
+            import matplotlib.font_manager  # Build font cache before recording cells.
+            with tempfile.TemporaryDirectory(prefix="fys2160-docs-") as work:
+                NotebookClient(nb,timeout=180,kernel_name="python3",resources={"metadata":{"path":work}}).execute()
+            nbformat.write(nb,path)
+        if not any(c.get("outputs") for c in nb.cells):
+            raise RuntimeError(f"Run with --execute first to create {name}'s recorded outputs.")
+        target=ROOT/"docs/examples/rendered";target.mkdir(parents=True,exist_ok=True)
+        (target/(name+".html")).write_text(export(nb))
+        downloads=ROOT/"docs/downloads";downloads.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(path,downloads/path.name)
+        print(f"Static {name} notebook exported with embedded trajectories; no kernel required.")
 
 if __name__=="__main__":main()

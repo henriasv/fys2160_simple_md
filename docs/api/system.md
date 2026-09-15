@@ -100,3 +100,26 @@ numbers of homonuclear molecules, while masses remain **per atom**.
 For an explicit System, `species` is a single string or one label per atom;
 `masses` is a per-atom array. This also supports heteronuclear diatomics:
 consecutive partners may have different species and masses.
+
+## A separate bond for each molecular species
+
+```python
+bond = {
+    "N2": RigidBond(length=0.65),
+    "O2": RigidBond(length=0.75),
+}
+```
+
+Pass this mapping to `Random`, `FCC` or `System` with `molecule="diatomic"`.
+Keys must match every molecular species exactly. These lengths are examples,
+not physical parameters for air. Each homonuclear molecule uses the bond for its
+species, including during integration and after checkpoint restart.
+
+For flexible molecules, use separate `HarmonicBond(length=..., stiffness=...)`
+or `Class2Bond(...)` entries. All entries must be rigid or all must be flexible;
+mixing constrained and flexible molecules in one simulation is not supported.
+Per-species mappings require homonuclear partners. Explicit heteronuclear pairs
+continue to support a shared bond description. `system.bond` returns a copy of
+the mapping; editing it does not change the system or a running simulation.
+
+See the [air-like example](../examples/index.md#an-air-like-mixture-with-different-bonds).

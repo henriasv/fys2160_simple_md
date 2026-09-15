@@ -25,6 +25,7 @@ nav:
 - Examples:
   - Recipes: examples/index.md
   - Executed notebook: examples/notebook.md
+  - NPT temperature sweep: examples/isobar.md
 - API reference:
   - System & geometry: api/system.md
   - MDSimulation: api/simulation.md

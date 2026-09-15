@@ -27,8 +27,8 @@ sim = MDSimulation(
 )
 result = sim.run(
     steps=5000,
-    sample_every=100,
-    save_every=500,
+    thermo_every=100,
+    trajectory_every=500,
     storage_name="random-gas",
 )
 ```
