@@ -1,4 +1,4 @@
-// Canvas event tests; run with: node md-simulator/tests/test_viewer.cjs
+// Canvas event tests; run with: node tests/test_viewer.cjs
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');

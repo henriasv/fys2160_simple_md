@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fys2160-md"
+name = "fys2160-simple-md"
 version = "0.1.0"
 description = "A small native molecular-dynamics solver with a notebook interface"
 readme = "README.md"
@@ -12,6 +12,12 @@ dependencies = ["numpy>=1.24", "pandas>=2.0"]
 
 [project.optional-dependencies]
 notebook = ["anywidget>=0.9,<1", "ipython>=8", "matplotlib>=3.7", "nbformat>=5", "nbclient>=0.9", "ipykernel>=6"]
+
+docs = ["mkdocs-material>=9.6,<10", "mkdocs>=1.6,<2"]
+
+[project.urls]
+Documentation = "https://henriasv.github.io/fys2160_simple_md/"
+Repository = "https://github.com/henriasv/fys2160_simple_md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,44 @@
+site_name: FYS2160 Simple MD
+site_description: Molecular dynamics you can inspect, run and understand.
+site_url: https://henriasv.github.io/fys2160_simple_md/
+repo_url: https://github.com/henriasv/fys2160_simple_md
+repo_name: henriasv/fys2160_simple_md
+theme:
+  name: material
+  font: false
+  icon:
+    logo: material/atom
+  palette:
+    primary: teal
+    accent: deep orange
+  features:
+  - navigation.tabs
+  - navigation.sections
+  - navigation.top
+  - content.code.copy
+  - search.suggest
+nav:
+- Start here:
+  - Overview: index.md
+  - Installation: installation.md
+  - Build a system: geometry.md
+- Examples:
+  - Recipes: examples/index.md
+  - Executed notebook: examples/notebook.md
+- API reference:
+  - System & geometry: api/system.md
+  - Simulation.run: api/simulation.md
+  - Saved Run: api/results.md
+- Physics & validation: physics.md
+plugins:
+- search
+markdown_extensions:
+- admonition
+- attr_list
+- md_in_html
+- pymdownx.details
+- pymdownx.superfences
+- pymdownx.highlight:
+    anchor_linenums: true
+extra_css:
+- stylesheets/extra.css

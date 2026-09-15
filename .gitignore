@@ -7,3 +7,7 @@ __pycache__/
 .ipynb_checkpoints/
 runs/
 .venv/
+
+site/
+docs/examples/rendered/
+docs/downloads/

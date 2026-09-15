@@ -16,7 +16,7 @@ class LiveView:
         try:
             from ._live_widget import MDWidget
         except ImportError as exc:
-            raise ImportError('Live 3D needs the notebook extras: pip install "fys2160-md[notebook]" (or the local package path).') from exc
+            raise ImportError('Live 3D needs the notebook extras: pip install "fys2160-simple-md[notebook]" (or the local package path).') from exc
         self.widget_type = MDWidget
         self.max_fps = max_fps
         self.frame_every = frame_every

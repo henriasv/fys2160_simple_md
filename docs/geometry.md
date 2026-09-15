@@ -1,0 +1,62 @@
+# Build a system
+
+Geometry belongs to a `System`; the solver receives that system explicitly.
+All boxes are periodic in three dimensions. A scalar `box` means a cube side
+length; a triple specifies rectangular side lengths.
+
+## Density or box size
+
+```python
+from fys2160_md import FCC, Random, Simulation
+
+crystal = FCC(N=500, rho=.8)
+crystal = FCC(N=500, box=12)
+rectangular = FCC(N=96, box=(6, 9, 12))
+gas = Random(N=500, rho=.03, min_distance=.9)
+
+result = Simulation.run(gas, steps=5000, storage_name="random-gas")
+```
+
+Specify **N and rho**, or **N and box**; specifying both rho and box is an error.
+`system.N`, `system.rho` and `system.box.lengths` report the actual geometry.
+
+## FCC: a complete periodic crystal
+
+A cubic FCC box contains N = 4n³ atoms: 32, 108, 256, 500, 864, 1372, ….
+N=1024 is rejected with nearby valid counts. The constructor never rounds N or
+randomly removes lattice sites. Rectangular boxes must contain whole conventional
+cells with the same lattice constant in all directions.
+
+For diatomics, N counts **molecules**, rho is their number density, and FCC
+sites locate the molecular centres. Partners start 0.7σ apart with random orientations.
+
+```python
+molecules = FCC(N=500, rho=.01, model="diatomic-rigid", temperature=2)
+```
+
+## Random: no close starting pairs
+
+```python
+gas = Random(N=108, box=(10, 12, 14), min_distance=1.0, seed=12)
+```
+
+`min_distance` applies to atom separations, including across periodic edges.
+The two bonded partners within a molecule are exempt. Placement uses rejection
+sampling with at most 1000 trials per particle by default. An impossible or
+very dense packing raises an error; it never silently weakens the separation.
+Use FCC for a dense crystal. Reusing the seed reproduces the initial state.
+
+## Explicit arrays
+
+```python
+from fys2160_md import System
+
+pair = System([[4, 5, 5], [5.15, 5, 5]], box=10,
+              velocities=[[.1, 0, 0], [-.1, 0, 0]], ensemble="nve")
+```
+
+Inputs are copied. Explicit velocities must have zero total momentum. Diatomic
+partners must be consecutive; rigid bonds must satisfy the length and tangency
+constraints. The solver requires every box length to exceed twice its cutoff.
+
+See the [System reference](api/system.md) for all defaults.
