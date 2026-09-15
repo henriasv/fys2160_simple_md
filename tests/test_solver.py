@@ -128,13 +128,13 @@ class SolverTests(unittest.TestCase):
 
     def test_saved_run_reload_resume_and_sampling_independence(self):
         s=self.sim(particles=32,model='diatomic-rigid')
-        a=s.run(steps=251,sample_every=43,save_every=97)
+        a=s.run(storage_name="first",steps=251,sample_every=43,save_every=97)
         self.assertEqual(a.metadata['completed_steps'],251)
         self.assertEqual(a.thermo.step.tolist(),[0,43,86,129,172,215,251])
         self.assertEqual([int(f['step']) for f in a.iter_frames()],[0,97,194,251])
         resumed=Simulation.from_run(a)
-        s.run(steps=333,sample_every=100,save_every=None)
-        resumed.run(steps=333,sample_every=17,save_every=71)
+        s.run(storage_name="continued",steps=333,sample_every=100,save_every=None)
+        resumed.run(storage_name="restarted",steps=333,sample_every=17,save_every=71)
         np.testing.assert_allclose(s.atoms.positions,resumed.atoms.positions,atol=1e-12)
         np.testing.assert_allclose(s.atoms.velocities,resumed.atoms.velocities,atol=1e-12)
         self.assertEqual(len(Run.find(self.root)),3)
@@ -159,7 +159,7 @@ class SolverTests(unittest.TestCase):
         np.testing.assert_array_equal(restart.atoms.velocities,s.atoms.velocities)
         broken=self.sim(model='diatomic-rigid',particles=32)
         with self.assertRaises(ValueError):
-            broken.run(timestep=10,steps=100,label='unstable')
+            broken.run(timestep=10,steps=100,storage_name='unstable')
         failed=[r for r in Run.find(self.root) if r.metadata['label']=='unstable'][0]
         self.assertEqual(failed.metadata['status'],'failed')
         self.assertFalse((failed.path/'checkpoint.npz').exists())

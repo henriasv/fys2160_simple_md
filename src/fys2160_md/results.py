@@ -69,5 +69,5 @@ class Run:
         return trajectory_player(self, max_frames=max_frames, max_atoms=max_atoms, projection=projection, zoom=zoom)
 
     def __repr__(self):
-        return (f"Run(label={self.metadata.get('label')!r}, "
+        return (f"Run(storage_name={self.metadata.get('storage_name', self.metadata.get('label'))!r}, "
                 f"status={self.metadata.get('status')!r}, path={str(self.path)!r})")

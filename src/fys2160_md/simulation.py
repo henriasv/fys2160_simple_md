@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import csv
-import re
+import json
+import shutil
 import time
-import uuid
 import numpy as np
 from . import _core
 from .results import Run, write_json
@@ -25,6 +25,29 @@ def _integer(value, name, minimum=1):
     if isinstance(value, (bool, np.bool_)) or int(value) != value or value < minimum:
         raise ValueError(f'{name} must be an integer >= {minimum}.')
     return int(value)
+
+
+def _storage_name(value):
+    if not isinstance(value, str) or not value or value != value.strip() or len(value) > 100:
+        raise ValueError('storage_name must be a nonempty folder name (at most 100 characters).')
+    if value.startswith('.') or any(c in value for c in '/\\\0<>:"|?*'):
+        raise ValueError('storage_name must be a plain folder name, such as atomic-gas.')
+    return value
+
+
+def _replace_run_directory(path):
+    """Overwrite only this package's own run directories, never arbitrary folders."""
+    if path.is_symlink():
+        raise ValueError('The storage folder must not be a symbolic link.')
+    if path.exists():
+        try:
+            metadata = json.loads((path/'metadata.json').read_text())
+        except (OSError, ValueError) as exc:
+            raise ValueError(f'{path} already exists and is not a saved MD run; choose another storage_name.') from exc
+        if not isinstance(metadata, dict) or metadata.get('schema_version') != 1 or 'package_version' not in metadata or 'configuration' not in metadata:
+            raise ValueError(f'{path} is not a saved MD run; choose another storage_name.')
+        shutil.rmtree(path)
+    (path/'frames').mkdir(parents=True)
 
 
 def _readonly(array):
@@ -58,13 +81,13 @@ class Simulation:
 
     ``particles`` counts atoms for the atomic model and molecules for diatomics.
     ``density`` uses that same count. Omitted run settings retain their values.
-    Every run is saved in a new directory. See README for model conventions.
+    Each run replaces the saved result with the same storage_name. See README for model conventions.
     """
 
     def __init__(self, *, model='atomic', particles=500, density=.001,
                  temperature=2., ensemble='nvt', timestep=None, cutoff=2.5,
                  skin=.4, friction=1., pressure=.01, pressure_time=5.,
-                 heat_rate=0., seed=87287, output_dir='runs'):
+                 heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation'):
         if model not in MODELS:
             raise ValueError(f'model must be one of {tuple(MODELS)}')
         self.model = model
@@ -79,6 +102,7 @@ class Simulation:
         if self.seed >= 2**64:
             raise ValueError('seed must be below 2**64.')
         self.output_dir = Path(output_dir).expanduser()
+        self.storage_name = _storage_name(storage_name)
         self._settings = dict(ensemble=ensemble,
                               timestep=(.005 if model == 'atomic' else .002) if timestep is None else timestep,
                               temperature=temperature, pressure=pressure, heat_rate=heat_rate)
@@ -234,7 +258,7 @@ class Simulation:
         return dict(model=self.model, particles=self.particles,
                     density=self.particles/np.prod(self._box), seed=self.seed,
                     cutoff=self.cutoff, skin=self.skin, friction=self.friction,
-                    pressure_time=self.pressure_time, **self.settings)
+                    pressure_time=self.pressure_time, storage_name=self.storage_name, **self.settings)
 
     def _save_checkpoint(self, path):
         with (path/'checkpoint.tmp').open('wb') as stream:
@@ -268,19 +292,30 @@ class Simulation:
 
     def run(self, timestep=None, steps=1000, *, ensemble=None, temperature=None,
             heat_rate=None, pressure=None, sample_every=100, save_every=500,
-            show=False, label='simulation'):
+            show=False, max_fps=None, frame_every=100, storage_name=None):
         """Advance and save a run; omitted physical settings retain their values.
 
+        Results go to output_dir/storage_name. Reusing a name replaces the old
+        result, including its trajectory. The constructor's name is the default.
         Sampling and trajectory intervals are in steps. ``save_every=None``
         disables trajectory frames, but preserves thermo and a final checkpoint.
-        ``show=True`` gives a throttled live projection in a Jupyter notebook.
+        ``show=True`` gives an interactive live 3D view in a Jupyter notebook.
+        ``max_fps`` optionally paces execution at at most that many displayed
+        frames/second, with ``frame_every`` MD steps/frame. None runs at full
+        speed with display-only throttling. Pacing does not change physical dt.
         """
         if self._failed:
             raise RuntimeError('This simulation failed; create a new one or resume a saved checkpoint.')
+        storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
         steps = _integer(steps, 'steps', 0)
         sample_every = _integer(sample_every, 'sample_every')
         if save_every is not None:
             save_every = _integer(save_every, 'save_every')
+        frame_every = _integer(frame_every, 'frame_every')
+        if max_fps is not None:
+            max_fps = _positive(max_fps, 'max_fps')
+            if not show:
+                raise ValueError('max_fps is a live-view option; set show=True.')
         config = self.settings
         for key, value in dict(timestep=timestep, ensemble=ensemble, temperature=temperature,
                                heat_rate=heat_rate, pressure=pressure).items():
@@ -290,24 +325,25 @@ class Simulation:
         live = None
         if show:
             from .visualization import LiveView
-            live = LiveView()
+            live = LiveView(max_fps=max_fps, frame_every=frame_every)
         was_controlled = self._settings['ensemble'] in ('nph','npt')
         self._settings = config
         if not was_controlled and config['ensemble'] in ('nph','npt'):
             self._rate = 0.
         self._advance(0)
         start = self.step
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
-        slug = re.sub(r'[^a-zA-Z0-9_-]+', '-', str(label)).strip('-')[:60] or 'simulation'
-        path = self.output_dir.resolve()/f'{stamp}-{slug}-{uuid.uuid4().hex[:8]}'
-        (path/'frames').mkdir(parents=True)
-        meta = dict(schema_version=1, package_version='0.1.0', label=str(label),
-                    status='running', configuration=self._config(), atoms=len(self._x),
+        path = self.output_dir.resolve()/storage_name
+        _replace_run_directory(path)
+        meta = dict(schema_version=1, package_version='0.1.0', label=storage_name,
+                    storage_name=storage_name,
+                    created_at=datetime.now(timezone.utc).isoformat(), status='running',
+                    configuration={**self._config(), 'storage_name': storage_name}, atoms=len(self._x),
                     molecules=self.particles if self.model != 'atomic' else 0,
                     degrees_of_freedom=self.dof, units='LJ reduced: sigma=epsilon=reference_mass=kB=1',
                     potential_shifted=True, pressure_estimator='atomic virial' if self.model == 'atomic' else 'molecular COM virial',
                     start_step=start, start_time=self.time, requested_steps=steps,
-                    sample_every=sample_every, save_every=save_every)
+                    sample_every=sample_every, save_every=save_every,
+                    live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None)
         write_json(path/'metadata.json', meta)
         started = time.monotonic()
         frame_index = 0
@@ -321,6 +357,8 @@ class Simulation:
             frame_index += 1
             last_frame = self.step
         try:
+            if live:
+                live.start(self)
             with (path/'thermo.csv').open('w', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(self.observables))
                 writer.writeheader()
@@ -333,6 +371,8 @@ class Simulation:
                     chunk = min(steps-elapsed, sample_every-elapsed%sample_every, 256)
                     if save_every is not None:
                         chunk = min(chunk, save_every-elapsed%save_every)
+                    if live:
+                        chunk = min(chunk, frame_every-elapsed%frame_every)
                     interrupted = self._advance(chunk)
                     elapsed = self.step-start
                     final = elapsed == steps or interrupted
@@ -342,7 +382,7 @@ class Simulation:
                         last_sample = self.step
                     if save_every is not None and (elapsed%save_every == 0 or final):
                         frame()
-                    if live:
+                    if live and (elapsed%frame_every == 0 or final):
                         live.update(self, force=final)
                     if interrupted:
                         status = 'interrupted'
@@ -355,6 +395,8 @@ class Simulation:
             meta['error'] = f'{type(exc).__name__}: {exc}'
             raise
         finally:
+            if live:
+                live.finish(self, status)
             if status != 'failed':
                 if last_sample != self.step:
                     with (path/'thermo.csv').open('a', newline='') as stream:
