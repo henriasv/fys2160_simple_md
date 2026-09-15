@@ -16,5 +16,6 @@ This repository contains the standalone course MD package. Python import:
 - Before publishing docs, build with `python scripts/build_docs.py --execute`
   then `python -m mkdocs build --strict` and check the static trajectory players.
 
-Extracted from fys2160-groupsession-materials on 2026-09-15. Course labs and
-exercise sheets remain in that repository. Update this handoff when finishing.
+The public examples must be independent demonstrations, never course lab
+solutions. Private teaching materials and historical lab notebooks remain in
+fys2160-groupsession-materials; do not copy them into this repository or site. Update this handoff when finishing.
