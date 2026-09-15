@@ -1,7 +1,11 @@
 /* Shared 3D renderer for live widgets and self-contained saved players. */
 function createMDView(el,data){
-const root=el,frames=data.frames;
-root.style.cssText='width:100%;max-width:52em;min-width:0;font-family:system-ui;color:#233744';
+// Own the sizing element: widget hosts may manage/reset styles on their `el`.
+// A fixed CSS width scales with editor zoom; max-width only shrinks narrow panes.
+const root=document.createElement('div'),frames=data.frames;
+root.dataset.mdView='';
+root.style.cssText='display:block;box-sizing:border-box;width:720px;max-width:100%;min-width:0;font:14px system-ui;color:#233744';
+el.replaceChildren(root);
 root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:#f4f7fa;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
 root.querySelector('[data-note]').textContent=data.note;
 let state=data.live?'Running':'',pendingDraw=0;
@@ -12,7 +16,8 @@ let zoom=data.zoom;zoomSlider.value=Math.round(100*zoom);zoomLabel.textContent=M
 if(data.live){button.hidden=true;slider.hidden=true;canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');}
 slider.max=frames.length-1;const extent=Math.max(...frames.flatMap(f=>f.box));
 function normalize(p,box){return p.map((v,d)=>(v-.5*box[d])/extent+.5);}
-let drag=null,timer=null;
+const pointers=new Map();
+let pan=[0,0],timer=null;
 const cy=Math.cos(.35),sy=Math.sin(.35),cp=Math.cos(.3),sp=Math.sin(.3);
 const initial=[[cy,0,-sy],[-sy*sp,cp,-cy*sp],[sy*cp,sp,cy*cp]];
 let rotation=initial.map(row=>row.slice());
@@ -28,7 +33,7 @@ function rotateView(dx,dy){
 function project(p){const centered=p.map(v=>v-.5);
   const r=rotation.map(row=>row.reduce((sum,v,i)=>sum+v*centered[i],0));
   const factor=projection.value==='perspective'?2.5/(2.5-r[2]):1;
-  return [360+300*zoom*factor*r[0],300-300*zoom*factor*r[1],r[2],factor];
+  return [360+pan[0]+300*zoom*factor*r[0],300+pan[1]-300*zoom*factor*r[1],r[2],factor];
 }
 // Build two shaded billboard textures once; drawing particles stays inexpensive.
 function sphereTexture(stops){
@@ -53,7 +58,9 @@ const f=frames[+slider.value];ctx.clearRect(0,0,720,600);
 for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b)line(project(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f.box)),project(normalize([b&1,(b>>1)&1,(b>>2)&1].map((v,d)=>v*f.box[d]),f.box)),'#a8b8c4',1);}
 const positions=f.x.map(p=>p.map((v,d)=>v/f.box[d]));const points=f.x.map(p=>project(normalize(p,f.box)));
 if(data.molecular)for(let i=0;i+1<points.length;i+=2){if(positions[i].every((v,d)=>Math.abs(v-positions[i+1][d])<.5))line(points[i],points[i+1],'#7d8b96',2);}
-points.map((p,i)=>({p,i})).sort((a,b)=>a.p[2]-b.p[2]).forEach(({p,i})=>{const radius=4.5*zoom*p[3];ctx.drawImage(sprites[data.molecular&&i%2?1:0],p[0]-radius,p[1]-radius,2*radius,2*radius);});
+// Radius = 0.5 sigma, projected with the same length scale as positions.
+// The sprite circle occupies 60 of its 64 pixels; compensate for its padding.
+points.map((p,i)=>({p,i})).sort((a,b)=>a.p[2]-b.p[2]).forEach(({p,i})=>{const radius=(300*.5/extent)*zoom*p[3]*(64/60);ctx.drawImage(sprites[data.molecular&&i%2?1:0],p[0]-radius,p[1]-radius,2*radius,2*radius);});
 updateLabel(f);}
 function updateLabel(f){
   label.textContent=(state?state+' · ':'')+'Step '+f.step+' · t* '+f.time.toFixed(2)
@@ -61,14 +68,36 @@ function updateLabel(f){
 }
 function stop(){clearInterval(timer);timer=null;button.textContent='Play';}
 button.onclick=()=>{if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);};
-projection.onchange=draw;slider.oninput=draw;canvas.onpointerdown=e=>{drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId);};
-canvas.onpointermove=e=>{if(!drag)return;rotateView((e.clientX-drag[0])*.01,(e.clientY-drag[1])*.01);drag=[e.clientX,e.clientY];draw();};canvas.onpointerup=canvas.onpointercancel=()=>drag=null;
+projection.onchange=draw;slider.oninput=draw;
+canvas.onpointerdown=e=>{
+  if(e.button!==0&&e.button!==2)return;
+  e.preventDefault();canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId,{x:e.clientX,y:e.clientY,pan:e.button===2||e.shiftKey});
+};
+function centroid(){
+  const points=[...pointers.values()];
+  return [points.reduce((s,p)=>s+p.x,0)/points.length,points.reduce((s,p)=>s+p.y,0)/points.length];
+}
+canvas.onpointermove=e=>{
+  const previous=pointers.get(e.pointerId);if(!previous)return;
+  const before=centroid(),dx=e.clientX-previous.x,dy=e.clientY-previous.y;
+  previous.x=e.clientX;previous.y=e.clientY;
+  const bounds=canvas.getBoundingClientRect();
+  if(pointers.size>1||previous.pan){
+    const after=centroid();
+    pan[0]+=(after[0]-before[0])*720/bounds.width;
+    pan[1]+=(after[1]-before[1])*600/bounds.height;
+  }else rotateView(dx*720/bounds.width*.01,dy*600/bounds.height*.01);
+  draw();
+};
+canvas.onpointerup=canvas.onpointercancel=canvas.onlostpointercapture=e=>pointers.delete(e.pointerId);
+canvas.oncontextmenu=e=>e.preventDefault();
 function setZoom(value){zoom=Math.max(.25,Math.min(3,value));zoomSlider.value=Math.round(100*zoom);zoomLabel.textContent=Math.round(100*zoom)+'%';draw();}
 zoomSlider.oninput=()=>setZoom(+zoomSlider.value/100);
 root.querySelector('[data-zoom-out]').onclick=()=>setZoom(zoom/1.2);
 root.querySelector('[data-zoom-in]').onclick=()=>setZoom(zoom*1.2);
-canvas.addEventListener('wheel',e=>{e.preventDefault();setZoom(zoom*Math.exp(-e.deltaY*.001));},{passive:false});
-root.querySelector('[data-reset]').onclick=()=>{rotation=initial.map(row=>row.slice());setZoom(data.zoom);};
+canvas.addEventListener('wheel',e=>{e.preventDefault();setZoom(zoom*Math.exp(e.deltaY*.001));},{passive:false});
+root.querySelector('[data-reset]').onclick=()=>{rotation=initial.map(row=>row.slice());pan=[0,0];setZoom(data.zoom);};
 canvas.onkeydown=e=>{const delta={ArrowRight:[.08,0],ArrowLeft:[-.08,0],ArrowDown:[0,.08],ArrowUp:[0,-.08]}[e.key];if(delta){e.preventDefault();rotateView(...delta);draw();}};
 function requestDraw(){
   if(!pendingDraw)pendingDraw=requestAnimationFrame(()=>{pendingDraw=0;draw();});

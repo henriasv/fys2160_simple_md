@@ -34,7 +34,7 @@ class LiveView:
     def start(self, sim):
         from IPython.display import display
         note = (f'Live 3D · showing {min(len(sim._x),1500)} of {len(sim._x)} atoms. '
-                'Drag to rotate; scroll to zoom. ')
+                'Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll to zoom. ')
         note += (f'{self.frame_every} MD steps/frame; capped at {self.max_fps:g} fps.'
                  if self.max_fps is not None else 'Full simulation speed; display updates capped at 20 fps.')
         self.widget = self.widget_type(
@@ -87,7 +87,7 @@ def trajectory_player(run, *, max_frames=150, max_atoms=1500, projection='orthog
                                box=f['box'].tolist(), time=float(f['time']), step=int(f['step'])))
     data = dict(frames=frames, projection=projection, zoom=zoom, molecular=run.metadata['configuration']['model'] != 'atomic')
     identifier = 'md-'+uuid.uuid4().hex
-    note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; scroll over the view to zoom. Arrow keys also rotate the focused view. Display sampling does not change saved data.'
+    note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll over the view to zoom. Arrow keys also rotate the focused view. Display sampling does not change saved data.'
     data.update(note=note, live=False)
     renderer = Path(__file__).with_name('viewer.js').read_text()
     markup = (f'<div id="{identifier}"></div><script>(()=>{{' + renderer +
