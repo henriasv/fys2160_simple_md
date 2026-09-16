@@ -3,7 +3,7 @@
 All quantities use LJ reduced units with reference mass, sigma_ref, epsilon_ref
 and kB set to one. Species parameters are relative to these fixed references. **All energies in `thermo.csv` are totals**, unlike LAMMPS's default
 per-atom thermodynamic energies in LJ units. Divide by `system.N` to get energy
-per atom or per molecule. `atom_density` is also recorded to expose that distinction.
+per atom or per molecule. For periodic systems, `atom_density` is also recorded to expose that distinction. Gravity uses the same fixed reference units with an explicitly chosen G; it does not use an LJ potential.
 
 - Default pair interaction for **atoms and molecules**: 12–6 LJ,
   `U(r) = 4*epsilon*((sigma/r)^12 - (sigma/r)^6)`.
@@ -22,7 +22,7 @@ All inputs use **fixed reference units**. Changing epsilon or sigma adjusts the
 interaction, not the unit system, bond length, temperature, box or cutoff.
 The displayed particle radius follows 0.5 times the chosen sigma.
 
-The pair potential is **shifted to zero at the cutoff**, with no tail correction;
+The LJ pair potential is **shifted to zero at the cutoff**, with no tail correction;
 forces below the cutoff match the stated potential. The original Atomify inputs
 use an unshifted cutoff. Thus trajectories and absolute energies need not match,
 and a changing number of pairs inside the cutoff also changes energy differences
@@ -40,7 +40,7 @@ not constitute a bit-for-bit reproduction of the Atomify input files. Molecular 
 ### Temperature, pressure and heating
 
 `T = 2K/g`, with `g = 3N_atoms - 3` for flexible/atomic models and one fewer
-DOF per rigid bond. Total centre-of-mass momentum is zero. Atomic pressure is
+DOF per rigid bond. Total centre-of-mass momentum is zero. For periodic LJ, atomic pressure is
 `(2K + sum(r_ij · F_ij))/(3V)`.
 
 Molecular pressure uses centre-of-mass translational kinetic energy plus the
@@ -51,7 +51,7 @@ bond forces must not be omitted from an otherwise atomic pressure formula.
 `Z = PV/(N_particles T)` always uses molecular count for diatomics. A finite ideal
 atomic system with zero total momentum gives `Z = 1 - 1/N`, rather than exactly one.
 
-`ensemble="nve"` selects fixed-volume dynamics without a thermostat. With
+For periodic LJ, `ensemble="nve"` selects fixed-volume dynamics without a thermostat. For open gravity it selects unconfined Newtonian dynamics. With
 nonzero `heat_rate`, energy is deliberately changing, so this is not a strict
 NVE ensemble. Similarly, NPH with heating does not conserve enthalpy.
 
@@ -158,7 +158,7 @@ python -m unittest discover -s tests
 node tests/test_viewer.cjs
 ```
 
-The 23 Python checks cover pair forces against analytical derivatives, periodic
+The 46 Python checks cover pair forces against analytical derivatives, periodic
 boundaries, neighbor lists against brute-force sums, timestep convergence, rigid
 constraints, thermodynamic sampling, energy addition, checkpoint restart, named
 storage, pacing invariance, and both geometry constructors.
@@ -168,3 +168,51 @@ and cleanup. `python tests/preview_viewer.py /tmp/depth.html` writes a browser
 regression page: its GPU pixels are compared with independent ray–sphere
 intersections at nearly coplanar angles, in both projections, and under reversed
 draw order. This specifically guards against dense-crystal overlap artifacts.
+
+
+## Isolated gravity and negative heat capacity
+
+The gravity path sums **every pair**, with open boundaries and velocity Verlet.
+There are no walls, cutoff, periodic images or Ewald sums. `softening=0` is exact
+Newtonian gravity; positive softening uses `U=-G*m_i*m_j/sqrt(r²+a²)` with its
+consistent gradient. A force test checks unequal masses, energy and the virial;
+a circular two-body orbit checks the exact analytic period, energy and angular
+momentum. Overlapping unsoftened particles are rejected. Native arrays receive
+shape, type, overlap and finite-value checks. Open coordinates survive
+copying, integration, saving and restart without wrapping.
+
+For a bound approximately stationary Newtonian cluster, time averages obey
+`2K+U≈0`, hence `E≈-K`. Its kinetic-temperature response can be negative.
+With smoothing the force virial W differs from U, so the correct diagnostic is
+`2K+W≈0`. In this example W/U is close to, but not exactly, one. The cluster's
+size is free to change; its response is not the usual fixed-volume heat capacity
+of a periodic LJ gas. No gas pressure, density, Z or enthalpy is inferred for it.
+
+The [executed example](examples/gravity.md) uses 256 particles, G=1/256 and
+softening=0.05, with dt=0.005. It first relaxes for 20 time units and measures for
+20, removes energy at rate −0.4 for 20, relaxes for 20, then measures for 40.
+The sink is off in both measurement windows. In the local validation run:
+
+| Calculation | Mean T before | Mean T after | Mean half-mass radius before → after |
+|---|---:|---:|---:|
+| Published protocol | 0.0971 | 0.1144 | 1.343 → 1.061 |
+| Half timestep, 0.0025 | 0.0962 | 0.1130 | 1.365 → 1.089 |
+| Smaller smoothing length, 0.025, dt=0.0025 | 0.0983 | 0.1173 | 1.341 → 1.121 |
+| No energy sink, dt=0.005 | 0.0971 | 0.0934 | 1.343 → 1.440 |
+
+Removing 8 energy units makes the cluster hotter and smaller; the control does
+not show that increase. Half the timestep retains the effect while reducing
+the range of the energy-balance error from about 0.0005 to 0.00013. The effect
+also remains with less smoothing. Individual chaotic trajectories and short
+averages need not agree exactly. This establishes an illustrative response,
+not a converged thermodynamic curve or an unsoftened point-particle limit.
+
+Run `python scripts/validate_gravity.py` to repeat the three comparison checks.
+All particles are retained in the simulation. A final instantaneous binding
+check found no positive-energy particles in these runs, but that check and the
+virial ratio do not guarantee permanent equilibrium. An unconfined finite
+cluster can slowly relax, form binaries or lose particles. The kinetic
+temperature measures motion of star-like particles, not stellar internal heat.
+
+References: [Lynden-Bell on negative heat capacity](https://arxiv.org/abs/cond-mat/9812172),
+[the periodic virial theorem](https://arxiv.org/abs/2302.12807).

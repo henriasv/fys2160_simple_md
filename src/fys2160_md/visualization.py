@@ -29,7 +29,7 @@ class LiveView:
         obs = sim.observables
         return dict(x=np.round(sim._x[:1500], 5).tolist(), box=sim._box.tolist(),
                     step=sim.step, time=sim.time, temperature=obs['temperature'],
-                    pressure=obs['pressure'])
+                    pressure=obs['pressure'] if sim.system.boundary == 'periodic' else None)
 
     def start(self, sim):
         from IPython.display import display
@@ -38,7 +38,7 @@ class LiveView:
         note += (f'{self.frame_every} MD steps/frame; capped at {self.max_fps:g} fps.'
                  if self.max_fps is not None else 'Full simulation speed; display updates capped at 20 fps.')
         self.widget = self.widget_type(
-            configuration=dict(projection='perspective', zoom=1., sigma=sim.sigma, species=sim.system._species[:1500].tolist(), molecular=sim.model!='atomic', note=note),
+            configuration=dict(projection='perspective', zoom=1., boundary=sim.system.boundary, sigma=.07 if sim.pair_potential == 'gravity' else sim.sigma, species=sim.system._species[:1500].tolist(), molecular=sim.model!='atomic', note=note),
             frame=self.snapshot(sim))
         display(self.widget)
         self.last = time.monotonic()
@@ -67,7 +67,7 @@ class LiveView:
             self.widget.status = status
 
 
-def trajectory_player(run, *, max_frames=150, max_atoms=1500, projection='orthographic', zoom=1.0):
+def trajectory_player(run, *, max_frames=150, max_atoms=1500, projection='orthographic', zoom=1.0, particle_radius=None):
     from IPython.display import HTML
     zoom = float(zoom)
     if not np.isfinite(zoom) or not .25 <= zoom <= 3:
@@ -85,9 +85,18 @@ def trajectory_player(run, *, max_frames=150, max_atoms=1500, projection='orthog
         with np.load(paths[index], allow_pickle=False) as f:
             frames.append(dict(x=np.round(f['positions'][:int(max_atoms)], 5).tolist(),
                                box=f['box'].tolist(), time=float(f['time']), step=int(f['step'])))
-    data = dict(frames=frames, projection=projection, zoom=zoom, sigma=run.metadata['configuration'].get('sigma', 1.), species=run.metadata.get('atom_species', [])[:int(max_atoms)], molecular=run.metadata['configuration']['model'] != 'atomic')
+    config = run.metadata['configuration']
+    if particle_radius is not None:
+        particle_radius = float(particle_radius)
+        if not np.isfinite(particle_radius) or particle_radius <= 0:
+            raise ValueError('particle_radius must be positive and finite.')
+    display_sigma = (2*particle_radius if particle_radius is not None else
+                     .07 if config.get('pair_potential') == 'gravity' else config.get('sigma',1.))
+    data = dict(boundary=config.get('boundary','periodic'), frames=frames, projection=projection, zoom=zoom, sigma=display_sigma, species=run.metadata.get('atom_species', [])[:int(max_atoms)], molecular=run.metadata['configuration']['model'] != 'atomic')
     identifier = 'md-'+uuid.uuid4().hex
     note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll over the view to zoom. Arrow keys also rotate the focused view. Display sampling does not change saved data.'
+    if config.get('boundary') == 'open':
+        note += ' Isolated cluster: no walls or periodic images. The view may omit distant particles; the solver retains them.'
     data.update(note=note, live=False)
     renderer = Path(__file__).with_name('viewer.js').read_text()
     markup = (f'<div id="{identifier}"></div><script>(()=>{{' + renderer +

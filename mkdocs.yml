@@ -26,6 +26,7 @@ nav:
   - Recipes: examples/index.md
   - Executed notebook: examples/notebook.md
   - NPT temperature sweep: examples/isobar.md
+  - Gravity & negative heat capacity: examples/gravity.md
 - API reference:
   - System & geometry: api/system.md
   - MDSimulation: api/simulation.md

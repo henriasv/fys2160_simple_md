@@ -118,3 +118,27 @@ continue to support a shared bond description. `system.bond` returns a copy of
 the mapping; editing it does not change the system or a running simulation.
 
 See the [air-like example](../examples/index.md#an-air-like-mixture-with-different-bonds).
+
+
+## Isolated gravity
+
+`pair_potential="gravity"` uses every pair, with no cutoff or periodic images:
+
+- `U(r) = -G*m_i*m_j/sqrt(r² + a²)`
+- `F_i = -G*m_i*m_j*(r_i-r_j)/(r² + a²)^(3/2)`
+
+Here `a=softening`. With a=0 the force is exactly inverse square and potential
+energy is exactly -G*m_i*m_j/r. Coincident particles are singular and rejected.
+With a>0 close encounters are smoothed; no approximation truncates the far field.
+Forces and energies use the same potential, integrated by velocity Verlet.
+
+Gravity currently requires an unbonded open System and ensemble="nve". The C
+solver directly sums all pairs, O(N²) per step, with a maximum of 4096 particles.
+There is no Ewald solver: that would describe periodic copies, a different
+physical problem. Particle masses enter both force and acceleration. G is
+expressed in the same fixed reference units as the rest of the package; changing
+it does not rescale coordinates or time. LJ epsilon/sigma are not applicable.
+
+`heat_rate` provides an optional controlled energy source/sink by uniform velocity
+rescaling. Its sign describes the **energy transfer**, not necessarily the final
+temperature change. See [negative heat capacity](../examples/gravity.md).

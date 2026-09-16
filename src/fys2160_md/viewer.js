@@ -46,7 +46,7 @@ const height=Math.max(1,Math.round(bounds.height*dpr));
 if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;}
 const f=frames[+slider.value],edges=[],bonds=[];
 const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f.box)));
-for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b)edges.push(corners[a],corners[b]);}
+for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b&&data.boundary!=="open")edges.push(corners[a],corners[b]);}
 const positions=f.x.map(p=>cameraPosition(normalize(p,f.box)));
 if(data.molecular)for(let i=0;i+1<positions.length;i+=2){
   if(f.x[i].every((v,d)=>Math.abs(v-f.x[i+1][d])<.5*f.box[d]))bonds.push(positions[i],positions[i+1]);
@@ -57,7 +57,7 @@ kinds:positions.map((_,i)=>speciesNames.length>0?speciesNames.indexOf(data.speci
 updateLabel(f);}
 function updateLabel(f){
   label.textContent=(state?state+' · ':'')+'Step '+f.step+' · t* '+f.time.toFixed(2)
-    +(data.live?' · T* '+f.temperature.toFixed(3)+' · P* '+f.pressure.toPrecision(4):'');
+    +(data.live?' · T* '+f.temperature.toFixed(3)+(Number.isFinite(f.pressure)?' · P* '+f.pressure.toPrecision(4):''):'');
 }
 function stop(){clearInterval(timer);timer=null;button.textContent='Play';}
 button.onclick=()=>{if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);};

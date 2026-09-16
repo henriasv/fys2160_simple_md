@@ -329,3 +329,11 @@ For a quantitative model, choose a published force field suitable for the
 properties of interest and convert all its parameters into the **same** LJ
 reference units. This classical bonded-LJ solver does not automatically supply
 real nitrogen/oxygen material parameters. It also does not include trace air components.
+
+
+## Negative heat capacity under gravity
+
+The [executed isolated-cluster notebook](gravity.md) removes energy and compares
+settled measurements before and after. It includes pyplot figures, energy and
+virial checks, saved-data analysis and a particle replay. Gravity uses an open
+system and all-pairs forces, with no cutoff or periodic copies.

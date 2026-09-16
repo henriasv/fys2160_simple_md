@@ -35,12 +35,12 @@ controls placement and molecular orientations, independently of the simulation s
 ## Explicit System
 
 ```python
-System(positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None)
+System(positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic")
 ```
 
 Positions are a (number of atoms, 3) array; box is a scalar or length-3 array.
 Optional velocities have the same shape. Masses are a positive per-atom array,
-defaulting to one. Inputs are copied, and positions wrap into the periodic box.
+defaulting to one. Inputs are copied. With `boundary="periodic"` (the default), positions wrap into the box. With `boundary="open"`, coordinates are preserved and the box is only a viewing frame: no walls or periodic images. Open systems currently support unbonded particles and gravity.
 Use `molecule="diatomic"` with a `HarmonicBond` or `RigidBond`.
 The default is unbonded atoms; diatomics default to `HarmonicBond()` if bond is omitted.
 
@@ -68,7 +68,8 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.bonds` | Read-only (number of bonds, 2) array of connected atom indices |
 | `system.model` | Legacy label (`atomic`, `diatomic-flexible`, `diatomic-rigid`) |
 | `system.N` | Number of atoms, or molecules for diatomics |
-| `system.rho` | Current N / volume |
+| `system.boundary` | `"periodic"` or `"open"` |
+| `system.rho` | Current N / volume for periodic systems; NaN for an unconfined cluster |
 | `system.box.lengths`, `.volume` | Box lengths and volume |
 | `system.atoms.positions`, `.masses` | Read-only array snapshots |
 | `system.atoms.velocities` | Read-only snapshot, or None before velocities are assigned |
@@ -123,3 +124,25 @@ continue to support a shared bond description. `system.bond` returns a copy of
 the mapping; editing it does not change the system or a running simulation.
 
 See the [air-like example](../examples/index.md#an-air-like-mixture-with-different-bonds).
+
+
+## Plummer: an isolated gravitational cluster
+
+```python
+Plummer(*, N=256, scale_radius=1., mass=1., G=1., softening=.05, seed=87287)
+```
+
+Returns an open `System` with equal particle masses and **supplied velocities**.
+The density is proportional to `(1 + r²/scale_radius²)^(-5/2)`. Isotropic speeds
+are sampled from the Plummer distribution, COM motion is removed, and their
+scale is adjusted so `2K = -W` for this finite sample and its chosen softened
+force. This prepares an approximately stationary cluster; let it settle before
+measuring. The initial virial ratio by itself is not proof of equilibrium.
+
+Use the **same G and softening** in MDSimulation. `mass` is the mass of each
+particle, so the total mass is `N*mass`. Supports 2–4096 particles. `scale_radius`
+is not the gravitational smoothing length. Its viewing frame has side
+`12*scale_radius`, centered on the COM. The spatial distribution has an
+untruncated tail, and particles outside the view remain in the calculation.
+
+See the [worked gravitational example](../examples/gravity.md).

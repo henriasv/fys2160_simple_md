@@ -66,3 +66,24 @@ production traces and playback. It estimates Z using target P,T and mean V;
 measured P,T are separate control checks. Both notebooks execute in build_docs.py.
 41 solver/API tests and viewer controls pass; per-species spring and constraint
 checks include save/restart and recording-name compatibility.
+
+
+2026-09-16: Added isolated all-pairs gravity in the C solver, selected with
+pair_potential="gravity" on System(boundary="open"), ensemble="nve", cutoff=None.
+G and softening are explicit, with softening=0 giving exact Newtonian gravity.
+No periodic sums, walls or truncation. Open coordinates persist through copy,
+saving and restart; pressure is NaN and no gas density/Z/enthalpy is reported.
+Plummer generates approximate stationary cluster positions and velocities, with
+G/softening matched to the simulation. It supplies a viewing frame, not a box.
+Gravity supports at most 4096 particles and uses O(N²) direct pairs.
+
+examples/gravity.ipynb removes 8 energy units from a 256-particle cluster and
+compares relaxed averages, with matplotlib plots, energy/virial checks and a
+saved player. The published protocol shows T 0.0971→0.1144 and half-mass radius
+1.343→1.061. Half-dt, smaller-softening and no-sink comparisons are reproducible
+with scripts/validate_gravity.py and documented in docs/physics.md. Interpretation
+is a dynamical illustration, not a precision equilibrium heat-capacity curve.
+46 tests pass, including exact two-body force/Kepler orbit, energy removal,
+open checkpoint and native-buffer safety. Static build now executes three
+notebooks. Gravity playback omits box edges; particle_radius controls display
+markers only (default 0.035). Existing LJ view radii/default cutoff remain as before.

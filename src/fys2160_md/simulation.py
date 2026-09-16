@@ -58,14 +58,27 @@ class MDSimulation:
     """
 
     def __init__(self, system, *, pair_potential='lj', epsilon=1., sigma=1., mixing_rule='lorentz-berthelot', exclude_bonded_pairs=True, temperature=2., ensemble='nvt', timestep=None,
-                 cutoff=2.5, skin=.4, friction=1., pressure=.01, pressure_time=5.,
+                 cutoff=None, G=1., softening=.05, skin=.4, friction=1., pressure=.01, pressure_time=5.,
                  heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation'):
         if not isinstance(system,System):
             raise TypeError('Pass a System, such as FCC(N=500, rho=0.1).')
         if len(system.atoms)>20000:
             raise ValueError('This course solver supports at most 20000 atoms.')
-        if pair_potential not in ('lj', 'lj96'):
-            raise ValueError('pair_potential must be "lj" (12–6) or "lj96" (9–6).')
+        if pair_potential not in ('lj', 'lj96', 'gravity'):
+            raise ValueError('pair_potential must be lj, lj96 or gravity.')
+        if pair_potential == 'gravity':
+            if system.boundary != 'open' or system.model != 'atomic':
+                raise ValueError('Gravity requires an unbonded System with boundary="open".')
+            if cutoff is not None:
+                raise ValueError('Isolated gravity has no cutoff; use cutoff=None.')
+            if len(system.atoms) > 4096:
+                raise ValueError('Direct all-pairs gravity supports at most 4096 particles.')
+            if epsilon != 1. or sigma != 1.:
+                raise ValueError('Gravity uses G and softening, not LJ epsilon/sigma.')
+        elif system.boundary != 'periodic':
+            raise ValueError('Lennard–Jones currently requires periodic boundaries.')
+        self._G = _positive(G, 'G')
+        self._softening = _positive(softening, 'softening', zero=True)
         if not isinstance(exclude_bonded_pairs, bool):
             raise TypeError('exclude_bonded_pairs must be True or False.')
         if mixing_rule != 'lorentz-berthelot':
@@ -80,7 +93,7 @@ class MDSimulation:
         self._x=self._system._x
         self._box=self._system._box
         self._mass=self._system._mass
-        self.cutoff=_positive(cutoff,'cutoff')
+        self.cutoff=None if pair_potential == 'gravity' else _positive(2.5 if cutoff is None else cutoff,'cutoff')
         self.skin=_positive(skin,'skin')
         self.friction=_positive(friction,'friction')
         self.pressure_time=_positive(pressure_time,'pressure_time')
@@ -117,6 +130,8 @@ class MDSimulation:
         self._advance(0)
 
     def _validate_settings(self, config):
+        if self.pair_potential == 'gravity' and config['ensemble'] != 'nve':
+            raise ValueError('Isolated gravity uses ensemble="nve" (no thermostat, walls or barostat).')
         if config['ensemble'] not in ('nve', 'nvt', 'nph', 'npt'):
             raise ValueError('ensemble must be nve, nvt, nph or npt.')
         for key in ('timestep', 'temperature', 'pressure'):
@@ -128,6 +143,14 @@ class MDSimulation:
             raise ValueError('Turn off the thermostat (nve or nph) before adding/removing heat.')
         if self.model != 'atomic' and config['ensemble'] in ('nph', 'npt'):
             raise ValueError('Pressure control is supported for the atomic model only.')
+
+    @property
+    def G(self):
+        return self._G
+
+    @property
+    def softening(self):
+        return self._softening
 
     @property
     def epsilon(self):
@@ -203,6 +226,16 @@ class MDSimulation:
 
     def _advance(self, steps):
         c = self._settings
+        if self.pair_potential == 'gravity':
+            self._potential, self._virial, done, interrupted = _core.advance_gravity(
+                self._x, self._v, self._f, self._mass, steps, c['timestep'],
+                self.G, self.softening, c['heat_rate'])
+            self._u[:] = self._x
+            self.step += done
+            self.time += done*c['timestep']
+            self.heat_added += done*c['timestep']*c['heat_rate']
+            self._pressure_numerator = float('nan')
+            return bool(interrupted)
         result = _core.advance(self._x, self._v, self._u, self._f, self._box,
             self._mass, steps, c['timestep'], self.cutoff, self.skin,
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
@@ -222,6 +255,17 @@ class MDSimulation:
         T = 2*K/self.dof
         P = self._pressure_numerator/(3*V)
         E = K+self._potential
+        if self.pair_potential == 'gravity':
+            center = np.average(self._x, axis=0, weights=self._mass)
+            radius = np.linalg.norm(self._x-center, axis=1)
+            order = np.argsort(radius)
+            half = np.searchsorted(np.cumsum(self._mass[order]), .5*self._mass.sum())
+            return dict(step=self.step, time=self.time, temperature=T,
+                        kinetic_energy=K, potential_energy=self._potential,
+                        total_energy=E, virial=self._virial,
+                        virial_ratio=2*K/(-self._virial) if self._virial else float('nan'),
+                        half_mass_radius=float(radius[order[half]]), heat_added=self.heat_added,
+                        pressure=float('nan'))
         controlled = self._settings['ensemble'] in ('nph','npt')
         H = E+self._settings['pressure']*V if controlled else E+P*V
         B = .5*self._baromass*self._rate**2 if controlled else 0.
@@ -234,8 +278,9 @@ class MDSimulation:
 
     def _config(self):
         return dict(model=self.model, bond=bond_config(self.system.bond),
+                    boundary=self.system.boundary, G=self.G, softening=self.softening,
                     pair_potential=self.pair_potential, epsilon=self.epsilon, sigma=self.sigma, mixing_rule=self.mixing_rule, exclude_bonded_pairs=self.exclude_bonded_pairs, particles=self.particles,
-                    density=self.particles/np.prod(self._box), seed=self.seed,
+                    density=self.rho if self.system.boundary == "periodic" else None, seed=self.seed,
                     cutoff=self.cutoff, skin=self.skin, friction=self.friction,
                     pressure_time=self.pressure_time, storage_name=self.storage_name, **self.settings)
 
@@ -260,7 +305,7 @@ class MDSimulation:
         c.setdefault('pair_potential', 'lj' if c['model'] == 'atomic' else 'lj96')
         bond_args = {'bond': read_bond(c.pop('bond'))} if 'bond' in c else {}
         with np.load(run.path/'checkpoint.npz', allow_pickle=False) as data:
-            system=System(data['positions'],data['box'],velocities=data['velocities'],masses=data['masses'],model=c.pop('model'),species=data['species'] if 'species' in data else None,**bond_args)
+            system=System(data['positions'],data['box'],velocities=data['velocities'],masses=data['masses'],model=c.pop('model'),boundary=c.pop('boundary', 'periodic'),species=data['species'] if 'species' in data else None,**bond_args)
             obj=cls(system,**c)
             for attr, key in (('_x','positions'),('_v','velocities'),('_u','unwrapped'),('_mass','masses'),('_box','box')):
                 getattr(obj,attr)[:] = data[key]
@@ -326,7 +371,7 @@ class MDSimulation:
                     molecules=self.particles if self.model != 'atomic' else 0,
                     atom_species=self.system._species.tolist(),
                     degrees_of_freedom=self.dof, units='fixed reduced reference units: length=energy=mass=kB=1',
-                    potential_shifted=True, pressure_estimator='atomic virial' if self.model == 'atomic' else 'molecular COM virial',
+                    potential_shifted=self.pair_potential != 'gravity', pressure_estimator=('not defined for an unconfined cluster' if self.pair_potential == 'gravity' else 'atomic virial' if self.model == 'atomic' else 'molecular COM virial'),
                     start_step=start, start_time=self.time, requested_steps=steps,
                     thermo_every=thermo_every, trajectory_every=trajectory_every,
                     live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None)

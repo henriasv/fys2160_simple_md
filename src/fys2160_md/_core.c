@@ -389,7 +389,95 @@ cleanup:
     for(int k=0;k<6;++k) if(buffers[k].obj) PyBuffer_Release(&buffers[k]);
     return result;
 }
+/* Isolated all-pairs Plummer-softened gravity. No cutoff, images or walls.
+   U_ij=-G*m_i*m_j/sqrt(r^2+a^2); W=sum r_ij dot F_ij. */
+static int gravity_forces(int n, const double *x, const double *mass,
+                          double G, double softening, double *f, double *U, double *W) {
+    memset(f,0,(size_t)3*n*sizeof(double));
+    *U=0; *W=0;
+    for(int i=0;i<n;++i)for(int j=i+1;j<n;++j){
+        double dr[3],r2=0;
+        for(int d=0;d<3;++d){dr[d]=x[3*i+d]-x[3*j+d];r2+=dr[d]*dr[d];}
+        if(r2 == 0 && softening == 0){PyErr_SetString(PyExc_ValueError,"Coincident particles make unsoftened gravity singular.");return -1;}
+        double inv=1/sqrt(r2+softening*softening);
+        double energy=-G*mass[i]*mass[j]*inv, coefficient=energy*inv*inv;
+        *U+=energy; *W+=coefficient*r2;
+        for(int d=0;d<3;++d){double fd=coefficient*dr[d];f[3*i+d]+=fd;f[3*j+d]-=fd;}
+    }
+    if(!isfinite(*U)||!isfinite(*W)){
+        PyErr_SetString(PyExc_ValueError,"Nonfinite gravitational energy; reduce timestep or check parameters.");return -1;
+    }
+    for(int k=0;k<3*n;++k)if(!isfinite(f[k])){
+        PyErr_SetString(PyExc_ValueError,"Nonfinite gravitational force.");return -1;
+    }
+    return 0;
+}
+
+static PyObject *advance_gravity(PyObject *self, PyObject *args) {
+    (void)self;
+    PyObject *objects[4], *result=NULL;
+    Py_buffer b[4]={{0}};
+    int requested,done=0,interrupted=0;
+    double dt,G,a,heat,U,W;
+    if(!PyArg_ParseTuple(args,"OOOOidddd",&objects[0],&objects[1],&objects[2],&objects[3],
+                         &requested,&dt,&G,&a,&heat))return NULL;
+    for(int k=0;k<4;++k){
+        if(PyObject_GetBuffer(objects[k],&b[k],PyBUF_C_CONTIGUOUS|PyBUF_FORMAT|(k<3?PyBUF_WRITABLE:0))<0)goto cleanup;
+        if(b[k].itemsize!=sizeof(double)||!b[k].format||strcmp(b[k].format,"d")){
+            PyErr_SetString(PyExc_TypeError,"Gravity arrays must be contiguous native float64 buffers.");goto cleanup;
+        }
+    }
+    if(b[0].ndim!=2||b[0].shape[1]!=3||b[0].shape[0]<2||b[0].shape[0]>4096){
+        PyErr_SetString(PyExc_ValueError,"Direct gravity requires positions (N,3), 2 <= N <= 4096.");goto cleanup;
+    }
+    int n=(int)b[0].shape[0];
+    for(int k=1;k<3;++k)if(b[k].ndim!=2||b[k].shape[0]!=n||b[k].shape[1]!=3){
+        PyErr_SetString(PyExc_ValueError,"Gravity state shapes must match positions.");goto cleanup;
+    }
+    if(b[3].ndim!=1||b[3].shape[0]!=n){PyErr_SetString(PyExc_ValueError,"Mass shape must be (N,).");goto cleanup;}
+    for(int i=0;i<4;++i)for(int j=i+1;j<4;++j){
+        uintptr_t p=(uintptr_t)b[i].buf,q=(uintptr_t)b[j].buf;
+        if(p<q+b[j].len&&q<p+b[i].len){PyErr_SetString(PyExc_ValueError,"Gravity buffers must not overlap.");goto cleanup;}
+    }
+    if(requested<0||!(dt>0)||!(G>0)||a<0||!isfinite(dt+G+a+heat)){
+        PyErr_SetString(PyExc_ValueError,"Gravity requires positive finite timestep and G, nonnegative softening, and finite heat_rate.");goto cleanup;
+    }
+    double *x=b[0].buf,*v=b[1].buf,*f=b[2].buf,*mass=b[3].buf;
+    for(int i=0;i<n;++i){
+        if(!(mass[i]>0)||!isfinite(mass[i])){PyErr_SetString(PyExc_ValueError,"Masses must be finite and positive.");goto cleanup;}
+        for(int d=0;d<3;++d)if(!isfinite(x[3*i+d])||!isfinite(v[3*i+d])){
+            PyErr_SetString(PyExc_ValueError,"Gravity state must be finite.");goto cleanup;
+        }
+    }
+    if(gravity_forces(n,x,mass,G,a,f,&U,&W)<0)goto cleanup;
+    while(done<requested){
+        kick(n,v,f,mass,.5*dt);
+        for(int k=0;k<3*n;++k){
+            x[k]+=dt*v[k];
+            if(!isfinite(x[k])){PyErr_SetString(PyExc_ValueError,"Unstable gravity step.");goto cleanup;}
+        }
+        if(gravity_forces(n,x,mass,G,a,f,&U,&W)<0)goto cleanup;
+        kick(n,v,f,mass,.5*dt);
+        if(heat!=0){
+            double K=kinetic(n,v,mass);
+            if(K<=0||K+heat*dt<=0){PyErr_SetString(PyExc_ValueError,"Heat removal would exhaust kinetic energy.");goto cleanup;}
+            double factor=sqrt((K+heat*dt)/K);
+            for(int k=0;k<3*n;++k)v[k]*=factor;
+        }
+        ++done;
+        if((done%64==0||done==requested)&&PyErr_CheckSignals()<0){
+            if(!PyErr_ExceptionMatches(PyExc_KeyboardInterrupt))goto cleanup;
+            PyErr_Clear();interrupted=1;break;
+        }
+    }
+    result=Py_BuildValue("ddii",U,W,done,interrupted);
+cleanup:
+    for(int k=0;k<4;++k)if(b[k].obj)PyBuffer_Release(&b[k]);
+    return result;
+}
+
 static PyMethodDef methods[] = {
+    {"advance_gravity", advance_gravity, METH_VARARGS, "Advance isolated softened gravity in-place."},
     {"advance", advance, METH_VARARGS, "Advance LJ dynamics in-place; return energy, virial, RNG, steps, interrupt flag, barostat rate and pressure numerator."},
     {NULL,NULL,0,NULL}
 };

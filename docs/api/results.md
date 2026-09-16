@@ -88,3 +88,10 @@ plt.show()
 
 `thermo` is a pandas DataFrame: read columns, calculate means and use ordinary
 NumPy, pandas and Matplotlib tools for your analysis.
+
+
+For an isolated gravity run, `view(particle_radius=0.035)` sets a display-only
+marker radius; it does not change the force. The default is 0.035 for gravity,
+and half the atom's sigma for LJ. Open-system playback has no box edges or
+position wrapping. The camera can omit distant particles, but they remain in
+saved data and in the force/energy calculation.

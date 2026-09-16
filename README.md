@@ -142,3 +142,13 @@ length or flexible spring settings; all species must use rigid bonds or all use
 flexible bonds. The [air-like example](https://henriasv.github.io/fys2160_simple_md/examples/#an-air-like-mixture-with-different-bonds)
 shows the full simulation and recording settings. `thermo_every` controls
 thermodynamic output; `trajectory_every` controls saved particle frames.
+
+
+### Isolated gravity
+
+The [recorded gravity example](https://henriasv.github.io/fys2160_simple_md/examples/gravity/)
+shows a cluster contracting and becoming hotter after energy removal. `Plummer`
+prepares an open cluster; `MDSimulation(..., pair_potential="gravity", G=...,
+softening=..., ensemble="nve", cutoff=None)` evaluates all pairs in C. Zero
+softening gives exact inverse-square gravity. No Ewald sum or periodic copies
+are involved. The example includes plots, saved-data analysis and playback.

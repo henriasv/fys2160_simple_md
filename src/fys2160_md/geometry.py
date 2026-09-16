@@ -104,3 +104,41 @@ def Random(*, N=None, rho=None, box=None, min_distance=.9, max_attempts=1000,
         else:
             raise ValueError(f'Could only place {i} of {N} particles with min_distance={distance:g}. Lower rho, enlarge the box, reduce min_distance explicitly, or use FCC for a dense crystal.')
     return System(positions,lengths,model=model,bond=bond,species=labels,masses=mass_values)
+
+
+def Plummer(*, N=256, scale_radius=1., mass=1., G=1., softening=.05, seed=87287):
+    """An isolated, approximately stationary spherical cluster, including velocities.
+
+    Sample rho(r) proportional to (1+r²/scale_radius²)^(-5/2) and the
+    isotropic Plummer speed distribution. Remove COM motion and rescale speeds
+    so 2K=-W for this finite sample and the chosen softened force. This is an
+    initial condition, not a guarantee of equilibrium; relax before measuring.
+    G and softening must match the simulation. All particles have the given mass.
+    The box is a viewing frame of side 12*scale_radius, never a physical boundary.
+    The distribution has an untruncated tail; particles outside the view remain
+    in the simulation. Direct gravity supports at most 4096 particles.
+    """
+    from . import _core
+    N=_integer(N, 'N', 2)
+    if N>4096:raise ValueError('Plummer supports at most 4096 particles.')
+    a=_positive(scale_radius, 'scale_radius')
+    mass=_positive(mass, 'mass');G=_positive(G, 'G')
+    softening=_positive(softening, 'softening', zero=True)
+    rng=_rng(seed)
+    r=a/np.sqrt(rng.uniform(np.finfo(float).eps, 1., N)**(-2/3)-1)
+    direction=rng.normal(size=(N,3));direction/=np.linalg.norm(direction,axis=1)[:,None]
+    x=r[:,None]*direction
+    # q=v/v_escape has density proportional to q²(1-q²)^(7/2).
+    q=np.empty(N);pending=np.arange(N)
+    while len(pending):
+        trial=rng.uniform(size=len(pending))
+        accept=rng.uniform(0,.1,len(pending))<trial**2*(1-trial**2)**3.5
+        q[pending[accept]]=trial[accept];pending=pending[~accept]
+    speed=q*np.sqrt(2*G*N*mass/np.sqrt(r*r+a*a))
+    direction=rng.normal(size=(N,3));direction/=np.linalg.norm(direction,axis=1)[:,None]
+    v=speed[:,None]*direction;v-=v.mean(axis=0)
+    x-=x.mean(axis=0);x+=6*a
+    masses=np.full(N,mass);f=np.zeros_like(x)
+    _,W,_,_=_core.advance_gravity(x,v,f,masses,0,.001,G,softening,0.)
+    v*=np.sqrt(-W/np.sum(masses[:,None]*v*v))
+    return System(x,12*a,velocities=v,masses=masses,boundary='open')

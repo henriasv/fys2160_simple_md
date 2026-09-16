@@ -46,7 +46,7 @@ def export(nb):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--execute",action="store_true");args=parser.parse_args()
-    for name in ("quickstart", "isobar"):
+    for name in ("quickstart", "isobar", "gravity"):
         path=ROOT/"examples"/(name+".ipynb");nb=nbformat.read(path,as_version=4)
         if args.execute:
             import matplotlib.font_manager  # Build font cache before recording cells.

@@ -19,21 +19,22 @@ unchanged, so it can be reused for independent experiments.
 MDSimulation(system, *, pair_potential="lj", epsilon=1., sigma=1.,
            mixing_rule="lorentz-berthelot",
            exclude_bonded_pairs=True, temperature=2., ensemble="nvt", timestep=None,
-           cutoff=2.5, skin=.4, friction=1., pressure=.01, pressure_time=5.,
+           cutoff=None, G=1., softening=.05, skin=.4, friction=1., pressure=.01, pressure_time=5.,
            heat_rate=0., seed=87287, output_dir="runs", storage_name="simulation")
 ```
 
 | Setting | Meaning |
 |---|---|
 | `system` | A System returned by FCC, Random or explicit arrays; copied on construction |
-| `pair_potential` | `"lj"` (12–6, default) or `"lj96"` (9–6); either works with atoms or molecules |
+| `pair_potential` | `"lj"` (12–6, default), `"lj96"` (9–6), or isolated `"gravity"` |
 | `epsilon`, `sigma` | Positive scalar or per-species dictionary; both default to 1 |
 | `mixing_rule` | `"lorentz-berthelot"`: arithmetic sigma and geometric epsilon; the currently supported rule |
 | `exclude_bonded_pairs` | True by default: connected atom pairs feel the bond only |
 | `temperature` | Initial temperature for missing velocities and thermostat target |
 | `ensemble` | `nve`, `nvt`, or atomic-only `nph` / `npt` |
 | `timestep` | Defaults to 0.005 for atoms, 0.002 for molecules |
-| `cutoff`, `skin` | Interaction cutoff and Verlet neighbor-list skin, in the fixed reference length unit |
+| `cutoff`, `skin` | LJ cutoff defaults to 2.5 when None; neighbor-list skin defaults to 0.4. Gravity requires cutoff=None and uses no neighbor list |
+| `G`, `softening` | Gravity coupling (default 1) and smoothing length (default 0.05); softening=0 gives exact inverse-square gravity |
 | `friction` | Langevin friction, inverse reduced time |
 | `pressure`, `pressure_time` | Target pressure and barostat time scale |
 | `heat_rate` | Total energy added per reduced time; default zero |
@@ -43,7 +44,7 @@ MDSimulation(system, *, pair_potential="lj", epsilon=1., sigma=1.,
 
 Explicit velocities in the System are preserved. A geometry seed controls
 placement and orientation; an MDSimulation seed controls velocities and stochastic
-integration. Every box length must exceed twice the simulation's cutoff.
+integration. For LJ, every box length must exceed twice the simulation's cutoff. Gravity requires `boundary="open"` and `ensemble="nve"`, with no walls, wrapping, thermostat or pressure control.
 
 Interaction parameters are fixed when constructing the simulation and saved with
 its results. They do not change the reference units. For example, `sigma=1.2`
@@ -70,7 +71,7 @@ sim.run(timestep=None, steps=1000, *,
 | `ensemble` | `nve`, `nvt`, `nph`, `npt`; None retains the current value |
 | `temperature` | New thermostat target; does not instantly reset velocities |
 | `pressure` | Pressure-control target, atomic NPH/NPT only |
-| `heat_rate` | Total energy per reduced time; positive heats, negative cools |
+| `heat_rate` | Total energy per reduced time; positive adds energy, negative removes energy |
 | `thermo_every` | Record thermodynamic quantities at this interval, in steps |
 | `trajectory_every` | Save particle frames at this interval; None disables frames |
 | `show` | Display one live notebook widget while running |
@@ -80,7 +81,7 @@ sim.run(timestep=None, steps=1000, *,
 
 Omitted physical settings persist. In particular, **set `heat_rate=0` to stop
 heating**. Adding heat with an active thermostat is rejected. With heat input,
-`nve` means fixed-volume dynamics without a thermostat, not constant energy.
+`nve` means dynamics without a thermostat, not constant energy. Periodic LJ keeps a fixed box; an isolated gravitational cluster has no prescribed physical volume.
 
 ### Thermodynamic measurements versus trajectory frames
 
@@ -130,7 +131,7 @@ Only the latest snapshot is sent; at most 1500 atoms are shown.
 - One-finger click-drag rotates; two-finger click-drag / Shift-drag pans.
 - Two-finger scrolling zooms; buttons and a slider are also available.
 - Perspective and orthographic views use sphere-surface depth for correct overlaps.
-- Particle radius is 0.5σ; Reset restores pan, rotation and zoom.
+- LJ particle radius is 0.5σ; gravity uses display markers of radius 0.035. Reset restores pan, rotation and zoom.
 
 ## Storage and interruption
 
@@ -144,3 +145,17 @@ Every completed/interrupted run has initial/final samples and a final checkpoint
 
 For mixtures, epsilon/sigma dictionaries must match `system.species`. See the
 [mixture example](../examples/index.md#a-mixture-with-different-masses-and-interactions).
+
+
+## Gravity observables
+
+An open cluster has no bulk pressure, density, compressibility factor or enthalpy.
+Its `thermo` output contains kinetic temperature, kinetic/potential/total energy,
+`heat_added`, the force `virial` W, `virial_ratio=2K/(-W)` and `half_mass_radius`
+(the radius enclosing half the mass around the COM). `pressure` is NaN for
+compatibility with generic readers; no gas equation of state is reported.
+
+Temperature is `2K/(3N-3)` in the COM frame, with kB=1. It measures particle
+motion, not the internal temperatures of the stars that the particles represent.
+G and softening are read-only as `sim.G` and `sim.softening` and are restored by
+`from_run`, together with the open boundary condition.

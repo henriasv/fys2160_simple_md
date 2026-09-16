@@ -63,10 +63,10 @@ class Run:
         fig.tight_layout()
         return fig
 
-    def view(self, *, max_frames=150, max_atoms=1500, projection='orthographic', zoom=1.0):
+    def view(self, *, max_frames=150, max_atoms=1500, projection='orthographic', zoom=1.0, particle_radius=None):
         """Return a self-contained notebook trajectory player with drag-to-rotate."""
         from .visualization import trajectory_player
-        return trajectory_player(self, max_frames=max_frames, max_atoms=max_atoms, projection=projection, zoom=zoom)
+        return trajectory_player(self, max_frames=max_frames, max_atoms=max_atoms, projection=projection, zoom=zoom, particle_radius=particle_radius)
 
     def __repr__(self):
         return (f"Run(storage_name={self.metadata.get('storage_name', self.metadata.get('label'))!r}, "

@@ -50,14 +50,19 @@ class Atoms:
 
 
 class System:
-    """Periodic box and particle state. Generated systems have no velocities yet.
+    """Particle state with periodic or open boundaries and optional velocities.
 
     MDSimulation copies this state, initializes missing velocities, and evolves
     its own copy. All public array accessors return read-only snapshots.
     """
 
-    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None):
+    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic"):
+        if boundary not in ("periodic", "open"):
+            raise ValueError("boundary must be periodic or open.")
+        self._boundary = boundary
         model, bond = resolve_model(model, molecule, bond)
+        if boundary == "open" and model != "atomic":
+            raise ValueError("Open boundaries currently support unbonded particles only.")
         self._bond = bond
         x=np.array(positions,dtype=float,order='C',copy=True)
         lengths=np.broadcast_to(np.asarray(box,dtype=float),(3,)).copy()
@@ -85,7 +90,7 @@ class System:
         self._model=model
         self._N=_integer(len(x) if model=='atomic' else len(x)//2,'N',2)
         self._box=lengths
-        self._x=np.ascontiguousarray(x%lengths)
+        self._x=np.ascontiguousarray(x%lengths if boundary == "periodic" else x)
         self._mass=np.ones(len(x)) if masses is None else np.array(masses,dtype=float,order='C',copy=True)
         if self._mass.shape!=(len(x),) or not np.isfinite(self._mass).all() or np.any(self._mass<=0):
             raise ValueError('masses must be a positive finite (N,) array.')
@@ -100,6 +105,11 @@ class System:
                 raise ValueError('Rigid bonds must have their specified lengths.')
             if self._v is not None and np.max(np.abs((bond*(self._v[::2]-self._v[1::2])).sum(axis=1)))>1e-10:
                 raise ValueError('Rigid bond relative velocities must be perpendicular to the bonds.')
+
+    @property
+    def boundary(self):
+        """Open systems use box only as a viewing frame, without walls or images."""
+        return self._boundary
 
     @property
     def species(self):
@@ -129,7 +139,7 @@ class System:
 
     @property
     def rho(self):
-        return self.N/self.box.volume
+        return self.N/self.box.volume if self.boundary == "periodic" else float("nan")
 
     @property
     def box(self):
@@ -146,11 +156,11 @@ class System:
 
     def copy(self):
         """Independent copy of geometry and any supplied velocities."""
-        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species)
+        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary)
 
     @classmethod
-    def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None):
-        return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species)
+    def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic"):
+        return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary)
 
     def __repr__(self):
         return f'System(model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None})'
