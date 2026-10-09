@@ -15,13 +15,20 @@ class WaterTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
 
-    def sim(self, model='spce', system=None, **kwargs):
+    def simulation(self, model='spce', **kwargs):
         water, epsilon, sigma, q = PARAMETERS[model]
         settings = dict(units='real', epsilon={'O': epsilon, 'H': 0.}, sigma={'O': sigma, 'H': 0.},
                         charge={'O': -2*q, 'H': q}, coulomb='pppm', kspace_accuracy=1e-5, cutoff=6.,
                         temperature=250., timestep=1., ensemble='nve', output_dir=self.temp.name)
         settings.update(kwargs)
-        return MDSimulation(system or IceIh(N=288, density=.93, bond=water), **settings)
+        return MDSimulation(**settings)
+
+    def ice(self, model='spce'):
+        return IceIh(N=288, density=.93, bond=PARAMETERS[model][0])
+
+    def sim(self, model='spce', system=None, **kwargs):
+        """Working engine of one run, for direct checks of forces and dynamics."""
+        return self.simulation(model, **kwargs)._engine(system or self.ice(model))
 
     def test_rigid_water_geometry(self):
         self.assertAlmostEqual(SPCE.hh_length, 2*np.sin(np.radians(109.47/2)), places=14)
@@ -68,9 +75,9 @@ class WaterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'perpendicular'):
             System(x, box, velocities=v, molecule='water', bond=SPCE, species=labels, units='real')
         with self.assertRaisesRegex(ValueError, 'units'):
-            MDSimulation(good, units='reduced')
+            MDSimulation()._engine(good)
         with self.assertRaisesRegex(ValueError, 'explicit temperature'):
-            MDSimulation(good, timestep=1., cutoff=6.)
+            MDSimulation(units='real', timestep=1., cutoff=6.)
 
     def test_forces_are_energy_gradients_including_m_site(self):
         for model in ('spce', 'tip4p'):
@@ -142,31 +149,39 @@ class WaterTests(unittest.TestCase):
         self.assertAlmostEqual(heated.observables['extended_enthalpy']-start, heated.heat_added, delta=.5)
 
     def test_deform_expands_box_and_keeps_molecules_rigid(self):
-        sim = self.sim(ensemble='nvt')
-        initial = sim._box.copy()
-        result = sim.run(steps=40, thermo_every=10, trajectory_every=None, deform=1.2, storage_name='expand')
-        np.testing.assert_allclose(sim._box, 1.2*initial, rtol=1e-13)
+        sim, ice = self.simulation(ensemble='nvt'), self.ice()
+        initial = ice.box.lengths
+        result = sim.run(ice, steps=40, thermo_every=10, trajectory_every=None, deform=1.2, storage_name='expand')
+        state = result.state
+        np.testing.assert_allclose(state.box.lengths, 1.2*initial, rtol=1e-13)
+        np.testing.assert_array_equal(ice.box.lengths, initial)
         self.assertEqual(result.metadata['deform'], 1.2)
-        x, L = sim._x, sim._box
+        x, L = state.atoms.positions, state.box.lengths
         for (a, b), length in zip(((0, 1), (0, 2), (1, 2)), SPCE.constraints):
             dr = x[a::3]-x[b::3]; dr -= L*np.rint(dr/L)
             np.testing.assert_allclose(np.linalg.norm(dr, axis=1), length, atol=1e-11)
         self.assertGreater(result.thermo.volume.iloc[-1], 1.7*result.thermo.volume.iloc[0])
         with self.assertRaisesRegex(ValueError, 'nve'):
-            sim.run(steps=10, ensemble='npt', pressure=1., deform=2.)
+            sim.run(state, steps=10, ensemble='npt', pressure=1., deform=2.)
 
     def test_runs_are_independent_of_recording_and_resume_exactly(self):
-        first, second = self.sim(ensemble='npt', pressure=1.), self.sim(ensemble='npt', pressure=1.)
-        a = first.run(steps=30, thermo_every=1, trajectory_every=None, storage_name='a')
-        second.run(steps=30, thermo_every=7, trajectory_every=10, storage_name='b')
-        np.testing.assert_array_equal(first._x, second._x)
-        np.testing.assert_array_equal(first._v, second._v)
-        self.assertEqual(a.metadata['pppm']['mesh'], [int(n) for n in first._pppm_state[:3]])
-        resumed = MDSimulation.from_run(Run(a.path))
-        self.assertEqual((resumed.units, resumed.coulomb, resumed.lj_shift), ('real', 'pppm', True))
-        first._advance(20); resumed._advance(20)
-        np.testing.assert_array_equal(first._x, resumed._x)
-        np.testing.assert_array_equal(first._v, resumed._v)
+        sim, ice = self.simulation(ensemble='npt', pressure=1.), self.ice()
+        a = sim.run(ice, steps=30, thermo_every=1, trajectory_every=None, storage_name='a')
+        b = sim.run(ice, steps=30, thermo_every=7, trajectory_every=10, storage_name='b')
+        np.testing.assert_array_equal(a.state.atoms.positions, b.state.atoms.positions)
+        np.testing.assert_array_equal(a.state.atoms.velocities, b.state.atoms.velocities)
+        whole = sim._engine(ice)
+        whole._advance(30)
+        self.assertEqual(a.metadata['pppm']['mesh'], [int(n) for n in whole._pppm_state[:3]])
+        state = Run(a.path).state
+        self.assertEqual((state.units, state.molecule, state.step), ('real', 'water', 30))
+        resumed = sim._engine(state)
+        whole._advance(20); resumed._advance(20)
+        np.testing.assert_array_equal(whole._x, resumed._x)
+        np.testing.assert_array_equal(whole._v, resumed._v)
+        # A different accuracy is a different numerical choice: the mesh is chosen again.
+        coarse = sim.run(state, steps=1, kspace_accuracy=1e-4, trajectory_every=None, storage_name='coarse')
+        self.assertLess(np.prod(coarse.metadata['pppm']['mesh']), np.prod(a.metadata['pppm']['mesh']))
 
 
 if __name__ == '__main__':

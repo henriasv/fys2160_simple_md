@@ -11,9 +11,8 @@ class InteractionTests(unittest.TestCase):
         for potential in ('lj', 'lj96'):
             for epsilon, sigma in ((1., 1.), (.4, 1.3), (2., .8)):
                 r = 1.6
-                sim = MDSimulation(System([[3, 3, 3], [3+r, 3, 3]], 12,
-                    velocities=np.zeros((2, 3))), pair_potential=potential,
-                    epsilon=epsilon, sigma=sigma)
+                sim = MDSimulation(pair_potential=potential, epsilon=epsilon, sigma=sigma)._engine(
+                    System([[3, 3, 3], [3+r, 3, 3]], 12, velocities=np.zeros((2, 3))))
                 def U(d):
                     z = sigma/d
                     return epsilon*(4*(z**12-z**6) if potential == 'lj' else 2*z**9-3*z**6)
@@ -41,8 +40,8 @@ class InteractionTests(unittest.TestCase):
                                 return .6*(4*(z**12-z**6) if potential=='lj' else 2*z**9-3*z**6)
                             value += pair(r)-pair(2.5)
                     return value
-                sim = MDSimulation(System(x, 12, velocities=np.zeros_like(x), molecule='diatomic', bond=bond),
-                    pair_potential=potential, exclude_bonded_pairs=exclude, epsilon=.6, sigma=.9)
+                sim = MDSimulation(pair_potential=potential, exclude_bonded_pairs=exclude, epsilon=.6, sigma=.9)._engine(
+                    System(x, 12, velocities=np.zeros_like(x), molecule='diatomic', bond=bond))
                 gradient=np.zeros_like(x)
                 for i in range(4):
                     for d in range(3):
@@ -58,8 +57,8 @@ class InteractionTests(unittest.TestCase):
     def test_harmonic_oscillator_matches_analytic_motion(self):
         bond=HarmonicBond(length=.8,stiffness=40)
         x=np.array([[4.,4,4],[4.9,4,4],[14.,14,14],[14.8,14,14]])
-        sim=MDSimulation(System(x,30,velocities=np.zeros_like(x),molecule='diatomic',bond=bond),
-                         ensemble='nve',timestep=.0002)
+        sim=MDSimulation(ensemble='nve',timestep=.0002)._engine(
+            System(x,30,velocities=np.zeros_like(x),molecule='diatomic',bond=bond))
         initial=sim.observables['total_energy']
         sim._advance(1000)
         separation=np.linalg.norm(sim._bond_vectors()[0])
@@ -70,34 +69,31 @@ class InteractionTests(unittest.TestCase):
     def test_custom_rigid_length_and_saved_physics(self):
         with tempfile.TemporaryDirectory() as folder:
             for bond in (HarmonicBond(length=.85,stiffness=60), RigidBond(length=.85), Class2Bond()):
-                sim=MDSimulation(Random(N=16,rho=.001,molecule='diatomic',bond=bond),
-                                 pair_potential='lj96',epsilon=.3,sigma=.8,output_dir=folder)
-                run=sim.run(steps=100,storage_name=type(bond).__name__)
-                resumed=MDSimulation.from_run(run)
-                self.assertEqual(resumed.system.bond,bond)
-                self.assertEqual(resumed.pair_potential,'lj96')
-                self.assertEqual(resumed.epsilon,.3);self.assertEqual(resumed.sigma,.8)
-                self.assertTrue(resumed.exclude_bonded_pairs)
-                sim._advance(200);resumed._advance(200)
-                np.testing.assert_array_equal(sim.atoms.positions,resumed.atoms.positions)
-                np.testing.assert_array_equal(sim.atoms.velocities,resumed.atoms.velocities)
+                start=Random(N=16,rho=.001,molecule='diatomic',bond=bond)
+                sim=MDSimulation(pair_potential='lj96',epsilon=.3,sigma=.8,output_dir=folder)
+                run=sim.run(start,steps=100,storage_name=type(bond).__name__)
+                self.assertEqual(run.state.bond,bond)
+                self.assertEqual(run.metadata['configuration']['pair_potential'],'lj96')
+                continued=sim._engine(run.state);continued._advance(200)
+                whole=sim._engine(start);whole._advance(300)
+                np.testing.assert_array_equal(whole.atoms.positions,continued.atoms.positions)
+                np.testing.assert_array_equal(whole.atoms.velocities,continued.atoms.velocities)
                 if isinstance(bond,RigidBond):
-                    np.testing.assert_allclose(np.linalg.norm(sim._bond_vectors(),axis=1),.85,atol=1e-12)
-                    np.testing.assert_allclose(np.sum(sim._bond_vectors()*(sim._v[::2]-sim._v[1::2]),axis=1),0,atol=1e-12)
+                    np.testing.assert_allclose(np.linalg.norm(whole._bond_vectors(),axis=1),.85,atol=1e-12)
+                    np.testing.assert_allclose(np.sum(whole._bond_vectors()*(whole._v[::2]-whole._v[1::2]),axis=1),0,atol=1e-12)
 
-    def test_legacy_checkpoint_preserves_old_force_field(self):
+    def test_legacy_checkpoint_keeps_the_old_bond(self):
         with tempfile.TemporaryDirectory() as folder:
-            sim=MDSimulation(FCC(N=32,rho=.001,model='diatomic-flexible'),pair_potential='lj96',output_dir=folder)
-            run=sim.run(steps=100)
+            sim=MDSimulation(pair_potential='lj96',output_dir=folder)
+            run=sim.run(FCC(N=32,rho=.001,model='diatomic-flexible'),steps=100)
             path=run.path/'metadata.json';metadata=json.loads(path.read_text())
-            for name in ('bond','pair_potential','exclude_bonded_pairs','epsilon','sigma'):
+            for name in ('bond','pair_potential','exclude_bonded_pairs','epsilon','sigma','units'):
                 metadata['configuration'].pop(name)
             path.write_text(json.dumps(metadata))
-            resumed=MDSimulation.from_run(run.path)
-            self.assertEqual(resumed.system.bond,Class2Bond())
-            self.assertEqual(resumed.pair_potential,'lj96')
-            sim._advance(100);resumed._advance(100)
-            np.testing.assert_array_equal(sim.atoms.positions,resumed.atoms.positions)
+            state=type(run).load(run.path).state
+            self.assertEqual(state.bond,Class2Bond())
+            self.assertEqual(state.units,'reduced')
+            np.testing.assert_array_equal(state.atoms.positions,run.state.atoms.positions)
 
     def test_validation_and_geometry(self):
         for constructor in (Random,FCC):
@@ -109,9 +105,8 @@ class InteractionTests(unittest.TestCase):
             np.testing.assert_allclose(np.linalg.norm(dr,axis=1),1.1)
             with self.assertRaises(ValueError):constructor(bond=HarmonicBond())
             with self.assertRaises(ValueError):constructor(molecule='diatomic',model='atomic')
-        system=FCC(N=32,rho=.01)
         for kw in ({'epsilon':0},{'sigma':-1},{'sigma':float('nan')},{'pair_potential':'wrong'}):
-            with self.assertRaises(ValueError):MDSimulation(system,**kw)
-        with self.assertRaises(TypeError):MDSimulation(system,exclude_bonded_pairs='yes')
+            with self.assertRaises(ValueError):MDSimulation(**kw)
+        with self.assertRaises(TypeError):MDSimulation(exclude_bonded_pairs='yes')
         with self.assertRaises(ValueError):HarmonicBond(stiffness=-1)
         with self.assertRaises(ValueError):RigidBond(length=0)

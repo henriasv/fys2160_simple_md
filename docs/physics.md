@@ -114,12 +114,12 @@ runs/<storage_name>/
 Only existing MD run directories are replaced; arbitrary folders and symbolic
 links are rejected. A `Run` refers to its folder, so overwriting that folder also
 changes what an older `Run` object reads. `Run.find("runs")` remains available
-for advanced comparisons; `MDSimulation.from_run(saved)` explicitly restarts the
-final checkpoint.
+for advanced comparisons; `saved.state` is the final state, to pass to
+`sim.run(saved.state, ...)`.
 
 Sampling/recording does not depend on visualization. Live display stores only
-the latest snapshot and shows at most 1500 atoms. `Run.view()` samples at most
-150 saved frames / 1500 atoms by default and reports those display limits.
+the latest snapshot and shows at most 3000 atoms (whole molecules). `Run.view()`
+samples at most 150 saved frames / 3000 atoms by default and reports those display limits.
 Full-resolution frames remain on disk. The player offers orthographic and perspective
 projection, with shaded sphere impostors of radius **0.5σ** in simulation
 units. Their size relative to the box therefore reflects density; the radius is

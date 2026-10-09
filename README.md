@@ -20,7 +20,6 @@ from fys2160_md import FCC, Random, MDSimulation, Run
 
 system = FCC(N=500, rho=0.1)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -30,6 +29,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=10_000,
     thermo_every=100,
     trajectory_every=500,
@@ -41,6 +41,8 @@ result.view()  # Interactive replay in a notebook.
 
 `Random(N=500, box=20, min_distance=.9)` gives self-avoiding random positions.
 Use `show=True, max_fps=20` on a run for live notebook visualization.
+Continue with `sim.run(result.state, ...)`: each run starts from the state you
+pass and never changes it, so one state can start several experiments.
 Saved trajectories remain replayable after restarting Python. Reusing a
 `storage_name` overwrites that result. LJ systems use reduced units; water uses
 LAMMPS `real` units (Å, fs, kcal/mol, K, atm).
@@ -78,7 +80,6 @@ from fys2160_md import Random, MDSimulation, HarmonicBond
 system = Random(N=100, rho=.01, molecule="diatomic",
                 bond=HarmonicBond(length=.7, stiffness=100))
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -89,6 +90,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=5000,
     thermo_every=100,
     trajectory_every=500,
@@ -108,7 +110,6 @@ See the [interaction reference](https://henriasv.github.io/fys2160_simple_md/api
 system = Random(species={"A": 80, "B": 20}, rho=.02,
                 masses={"A": 1, "B": 4}, min_distance=1.1)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon={"A": 1, "B": .5},
     sigma={"A": 1, "B": 1.2},
@@ -118,6 +119,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=3000,
     thermo_every=100,
     trajectory_every=500,

@@ -24,8 +24,8 @@ class SpeciesTests(unittest.TestCase):
         for potential in ('lj','lj96'):
             x=np.array([[3.,3,3],[4.6,3,3]])
             system=System(x,10,velocities=np.zeros_like(x),species=['A','B'],masses=[1,4])
-            sim=MDSimulation(system,epsilon={'A':.5,'B':2},sigma={'A':.8,'B':1.2},
-                             pair_potential=potential,ensemble='nve',timestep=1e-5)
+            sim=MDSimulation(epsilon={'A':.5,'B':2},sigma={'A':.8,'B':1.2},
+                             pair_potential=potential,ensemble='nve',timestep=1e-5)._engine(system)
             r=1.6;eps=1.;sig=1.
             def U(d):return eps*(4*((sig/d)**12-(sig/d)**6) if potential=='lj' else 2*(sig/d)**9-3*(sig/d)**6)
             f=-(U(r+1e-6)-U(r-1e-6))/2e-6
@@ -38,7 +38,8 @@ class SpeciesTests(unittest.TestCase):
     def test_species_thermostat_equipartition_and_restart(self):
         system=Random(species={'A':40,'B':40},rho=1e-8,masses={'A':1,'B':4})
         with tempfile.TemporaryDirectory() as folder:
-            sim=MDSimulation(system,epsilon={'A':1,'B':.6},sigma={'A':1,'B':1.1},output_dir=folder)
+            simulation=MDSimulation(epsilon={'A':1,'B':.6},sigma={'A':1,'B':1.1},output_dir=folder)
+            sim=simulation._engine(system)
             sim._advance(5000)
             samples={name:[] for name in system.species}
             for _ in range(800):
@@ -49,16 +50,16 @@ class SpeciesTests(unittest.TestCase):
             for name,mass in [('A',1),('B',4)]:
                 expected=3*2/mass*(1-mass/200)  # zero total momentum constraint
                 self.assertLess(abs(np.mean(samples[name])/expected-1),.04)
-            run=sim.run(steps=100)
-            resumed=MDSimulation.from_run(run)
-            self.assertEqual(resumed.epsilon,sim.epsilon);self.assertEqual(resumed.sigma,sim.sigma)
-            np.testing.assert_array_equal(resumed.atoms.species,sim.atoms.species)
-            np.testing.assert_array_equal(resumed.atoms.masses,sim.atoms.masses)
-            sim._advance(100);resumed._advance(100)
-            np.testing.assert_array_equal(sim.atoms.positions,resumed.atoms.positions)
+            run=simulation.run(sim.state(),steps=100)
+            config=run.metadata['configuration']
+            self.assertEqual(config['epsilon'],simulation.epsilon);self.assertEqual(config['sigma'],simulation.sigma)
+            np.testing.assert_array_equal(run.state.atoms.species,sim.atoms.species)
+            np.testing.assert_array_equal(run.state.atoms.masses,sim.atoms.masses)
+            sim._advance(100)
+            np.testing.assert_array_equal(sim.atoms.positions,run.state.atoms.positions)
             self.assertIn('"species"',run.view().data)
-            parameters=sim.epsilon;parameters['A']=999
-            self.assertEqual(sim.epsilon['A'],1)
+            parameters=simulation.epsilon;parameters['A']=999
+            self.assertEqual(simulation.epsilon['A'],1)
 
     def test_molecular_mixtures_and_unequal_bonded_masses(self):
         system=Random(species={'A':10,'B':6},molecule='diatomic',bond=RigidBond(length=.9),rho=.001,
@@ -67,8 +68,8 @@ class SpeciesTests(unittest.TestCase):
         np.testing.assert_array_equal(system.atoms.species[::2],system.atoms.species[1::2])
         # Explicit arrays also support different masses within a rigid molecule.
         x=np.array([[3.,3,3],[3.9,3,3],[13.,13,13],[13.9,13,13]])
-        sim=MDSimulation(System(x,30,molecule='diatomic',bond=RigidBond(length=.9),
-                               masses=[1,3,1,3],species=['A','B','A','B']),ensemble='nve')
+        sim=MDSimulation(ensemble='nve')._engine(System(x,30,molecule='diatomic',bond=RigidBond(length=.9),
+                                                    masses=[1,3,1,3],species=['A','B','A','B']))
         energy=sim.observables['total_energy'];sim._advance(1000)
         np.testing.assert_allclose(np.linalg.norm(sim._bond_vectors(),axis=1),.9,atol=1e-12)
         np.testing.assert_allclose((sim._v*sim._mass[:,None]).sum(axis=0),0,atol=1e-12)
@@ -77,4 +78,4 @@ class SpeciesTests(unittest.TestCase):
     def test_parameter_maps_are_complete(self):
         system=Random(species={'A':10,'B':6},rho=.001)
         for kw in ({'epsilon':{'A':1}},{'sigma':{'A':1,'B':1,'C':1}},{'mixing_rule':'unknown'}):
-            with self.assertRaises(ValueError):MDSimulation(system,**kw)
+            with self.assertRaises(ValueError):MDSimulation(**kw)._engine(system)

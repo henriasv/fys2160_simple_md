@@ -24,10 +24,10 @@ class PPPMTests(unittest.TestCase):
         labels = np.where(q > 0, 'Na', 'Cl')
         system = System(x, box, species=labels, units=units, masses=np.ones(len(x)))
         cutoff = cutoff or .45*min(box)
-        return MDSimulation(system, units=units, epsilon={'Na': 0., 'Cl': 0.}, sigma={'Na': 0., 'Cl': 0.},
+        return MDSimulation(units=units, epsilon={'Na': 0., 'Cl': 0.}, sigma={'Na': 0., 'Cl': 0.},
                             charge={'Na': 1., 'Cl': -1.}, coulomb='pppm', kspace_accuracy=accuracy,
                             cutoff=cutoff, temperature=1. if units == 'reduced' else 300., timestep=.001 if units == 'reduced' else 1.,
-                            ensemble='nve', output_dir=self.temp.name, **kwargs)
+                            ensemble='nve', output_dir=self.temp.name, **kwargs)._engine(system)
 
     def test_fft_matches_numpy(self):
         rng = np.random.default_rng(4)
@@ -83,14 +83,14 @@ class PPPMTests(unittest.TestCase):
         system = System(x, box, species=np.where(q > 0, 'Na', 'Cl'))
         common = dict(epsilon={'Na': 0., 'Cl': 0.}, sigma={'Na': 0., 'Cl': 0.}, cutoff=.9, output_dir=self.temp.name)
         with self.assertRaises(ValueError):
-            MDSimulation(system, charge={'Na': 1., 'Cl': -.5}, coulomb='pppm', **common)
+            MDSimulation(charge={'Na': 1., 'Cl': -.5}, coulomb='pppm', **common)._engine(system)
         with self.assertRaises(ValueError):
-            MDSimulation(system, charge={'Na': 1., 'Cl': -1.}, **common)
+            MDSimulation(charge={'Na': 1., 'Cl': -1.}, **common)
         with self.assertRaises(ValueError):
-            MDSimulation(system, coulomb='pppm', **common)
+            MDSimulation(coulomb='pppm', **common)
         with self.assertRaises(ValueError):
-            MDSimulation(System(x, box, species=np.where(q > 0, 'Na', 'Cl'), units='real'),
-                         charge={'Na': 1., 'Cl': -1.}, coulomb='pppm', **common)
+            MDSimulation(charge={'Na': 1., 'Cl': -1.}, coulomb='pppm', **common)._engine(
+                System(x, box, species=np.where(q > 0, 'Na', 'Cl'), units='real'))
 
 
 if __name__ == '__main__':

@@ -4,7 +4,10 @@ This repository contains the standalone course MD package. Python import:
 `fys2160_md`; distribution: `fys2160-simple-md`.
 
 - Geometry/state: `src/fys2160_md/{geometry,system}.py`.
-- Runner: `sim = MDSimulation(system, ...)`, then `sim.run(...)`; native solver: `_core.c`
+- Runner: `sim = MDSimulation(...)` holds interactions and default controls only;
+  `run = sim.run(state, ...)` evolves a copy of a System and `run.state` is the
+  final state (clock, thermostat RNG, barostat rate, PPPM choice, heat added),
+  so chained runs equal one long run. Run controls never carry over. Native solver: `_core.c`
   (LJ/diatomic/gravity, keep byte-identical) and `molecular.c` + `pppm.c` + `fft.c`
   (charged atoms and rigid water, LAMMPS `real` units).
 - `tests/test_golden.py` freezes short trajectories of the old solvers; regenerate
@@ -99,9 +102,9 @@ carry units ("reduced" default, "real" = LAMMPS real); real units require explic
 temperature, timestep, cutoff (and pressure for npt). charge + coulomb="pppm"
 select PPPM written from Hockney-Eastwood/Deserno-Holm, matching LAMMPS pppm
 (ik, order 5, same mesh/g selection; energies agree to ~1e-12 with LAMMPS at the
-same mesh, forces ~2e-6). The mesh is re-chosen at each run and when the box
-changes >5%; state persists in checkpoints so trajectories are bitwise
-independent of thermo_every. Molecular MTK barostat (COM scaling), run(deform=s)
+same mesh, forces ~2e-6). The mesh choice is kept in the state and re-chosen
+when kspace_accuracy/coulomb_cutoff change or the box changes >5%, so
+trajectories are bitwise independent of thermo_every and of run splitting. Molecular MTK barostat (COM scaling), run(deform=s)
 with COM remap (nve/nvt), IceIh(N=8nx ny nz) with ice rules and zero dipole,
 Random(molecule="water"), lj_shift option, viewer bonds/element colours/real-unit
 labels. Own radix-2/3/5 FFT instead of a vendored library. LAMMPS is a behavioural
@@ -112,4 +115,14 @@ codes, so the private Lab 2 notebook (fys2160-groupsession-materials/labs/lab2)
 melts at 350 K; expansion/vapour use kspace_accuracy=1e-4. examples/water.ipynb is
 an independent liquid-structure demo (SPC/E vs TIP4P/2005 density and g_OO).
 61 Python tests and viewer controls pass.
+
+2026-10-09: state is separated from the simulation. MDSimulation(...) takes no
+System (passing one raises a TypeError explaining the new style); run(state, ...)
+copies the state and run.state (from the checkpoint; also via Run.load) is the
+output. System now carries time, step, thermostat RNG, barostat rate, PPPM mesh
+choice and cumulative heat_added, so chained runs reproduce one long run bitwise.
+Run controls apply to that run only (no carry-over); from_run and the Simulation
+alias are removed. Tests use MDSimulation(...)._engine(state) for low-level
+checks. Golden trajectories and all example outputs are unchanged by the
+refactor. The private Lab 2 notebook passes each stage's .state explicitly.
 

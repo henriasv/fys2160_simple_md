@@ -10,7 +10,6 @@ from fys2160_md import IceIh, RigidWater, MDSimulation
 spce = RigidWater(oh_length=1.0, hoh_angle=109.47)
 system = IceIh(N=768, density=0.92, molecule="water", bond=spce, seed=1)
 sim = MDSimulation(
-    system,
     units="real",
     epsilon={"O": 0.15535, "H": 0.0},   # kcal/mol
     sigma={"O": 3.166, "H": 0.0},       # Å
@@ -27,7 +26,8 @@ sim = MDSimulation(
     friction=0.005,                     # 1/fs (Langevin thermostat)
     pressure_time=1000.0,               # fs (barostat inertia)
 )
-result = sim.run(steps=1000, thermo_every=10, trajectory_every=100, storage_name="ice")
+ice = sim.run(system, steps=1000, thermo_every=10, trajectory_every=100, storage_name="ice")
+water = sim.run(ice.state, steps=10000, temperature=350, thermo_every=50, trajectory_every=500, storage_name="melting")
 ```
 
 ## Units
@@ -82,11 +82,12 @@ not properties computed here.
 ```python
 tip4p2005 = RigidWater(oh_length=0.9572, hoh_angle=104.52, m_distance=0.1546)
 system = IceIh(N=768, density=0.92, molecule="water", bond=tip4p2005)
-sim = MDSimulation(system, units="real",
+sim = MDSimulation(units="real",
                    epsilon={"O": 0.1852, "H": 0.0}, sigma={"O": 3.1589, "H": 0.0},
                    lj_shift=False, charge={"O": -1.1128, "H": 0.5564},
                    coulomb="pppm", kspace_accuracy=1e-5, cutoff=10.0, coulomb_cutoff=10.0,
                    ensemble="npt", temperature=251, pressure=1.0, timestep=2.0)
+ice = sim.run(system, steps=1000, thermo_every=10, trajectory_every=100, storage_name="tip4p-ice")
 ```
 
 `lj_shift=False` uses the plain truncated Lennard-Jones potential, as LAMMPS
@@ -124,8 +125,10 @@ optimal influence function of Hockney and Eastwood.
 `kspace_accuracy` is the relative RMS force accuracy, compared with the force
 between two unit charges 1 Å apart. From it and `coulomb_cutoff`, the Ewald
 splitting parameter and mesh are chosen as in LAMMPS. They are selected again
-at the start of every `run` and whenever the box changes by more than 5%; the
-choice is recorded in `metadata["pppm"]`. The total Ewald energy does not depend
+when a run starts from a state without a mesh choice for the same
+`coulomb_cutoff` and `kspace_accuracy`, and whenever the box changes by more than
+5%. The choice is kept in the state, so continuing a run gives the same
+trajectory as one longer run, and it is recorded in `metadata["pppm"]`. The total Ewald energy does not depend
 on the split, so changing `coulomb_cutoff` or `kspace_accuracy` between runs
 changes only the numerical error, not the model.
 

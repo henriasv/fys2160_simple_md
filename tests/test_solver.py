@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import numpy as np
-from fys2160_md import Simulation, System, FCC, Run
+from fys2160_md import MDSimulation, System, FCC, Run
 from fys2160_md import _core
 
 
@@ -13,13 +13,20 @@ class SolverTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = self.temp.name
 
+    def system(self, **kwargs):
+        return FCC(N=kwargs.pop('N',500),rho=kwargs.pop('rho',.001),model=kwargs.pop('model','atomic'))
+
     def sim(self, **kwargs):
-        return Simulation(FCC(N=kwargs.pop('N',500),rho=kwargs.pop('rho',.001),
-                              model=kwargs.pop('model','atomic')),output_dir=self.root,**kwargs)
+        """Working engine for low-level checks of one run's state."""
+        system = self.system(**{k: kwargs.pop(k) for k in ('N', 'rho', 'model') if k in kwargs})
+        return MDSimulation(output_dir=self.root, **kwargs)._engine(system)
+
+    def engine(self, system, **kwargs):
+        return MDSimulation(output_dir=self.root, **kwargs)._engine(system)
 
     def test_pair_force_energy_and_periodicity(self):
         for separation in (1.1, 1.8, 2.49, 2.6):
-            s = Simulation(System.from_arrays([[0.2, 1, 1], [10.2 - separation, 1, 1]], np.zeros((2, 3)), 10), ensemble='nve', output_dir=self.root)
+            s = self.engine(System.from_arrays([[0.2, 1, 1], [10.2 - separation, 1, 1]], np.zeros((2, 3)), 10), ensemble='nve')
             r=separation
             expected=24*(2*r**-13-r**-7) if r<2.5 else 0
             energy=4*(r**-12-r**-6)-4*(2.5**-12-2.5**-6) if r<2.5 else 0
@@ -40,7 +47,7 @@ class SolverTests(unittest.TestCase):
                     r=np.linalg.norm(p[i]-p[j])
                     if r<2.5:U+=2*r**-9-3*r**-6-(2*2.5**-9-3*2.5**-6)
             return U
-        s=Simulation(System.from_arrays(x, np.zeros_like(x), 12, model='diatomic-flexible'), pair_potential='lj96', ensemble='nve', output_dir=self.root)
+        s=self.engine(System.from_arrays(x, np.zeros_like(x), 12, model='diatomic-flexible'), pair_potential='lj96', ensemble='nve')
         gradient=np.zeros_like(x)
         for i in range(4):
             for d in range(3):
@@ -67,7 +74,7 @@ class SolverTests(unittest.TestCase):
     def test_verlet_energy_converges_with_timestep(self):
         errors=[]
         for dt in (.004,.002):
-            s=Simulation(System.from_arrays([[4, 5, 5], [5.15, 5, 5]], [[0.1, 0, 0], [-0.1, 0, 0]], 10), ensemble='nve', timestep=dt, output_dir=self.root)
+            s=self.engine(System.from_arrays([[4, 5, 5], [5.15, 5, 5]], [[0.1, 0, 0], [-0.1, 0, 0]], 10), ensemble='nve', timestep=dt)
             initial=s.observables['total_energy'];e=[]
             for _ in range(200):
                 s._advance(round(.02/dt));e.append(s.observables['total_energy'])
@@ -82,7 +89,7 @@ class SolverTests(unittest.TestCase):
         np.testing.assert_allclose(np.linalg.norm(s._bond_vectors(),axis=1),.7,atol=1e-12)
         np.testing.assert_allclose((s._bond_vectors()*(s._v[::2]-s._v[1::2])).sum(axis=1),0,atol=1e-12)
         self.assertAlmostEqual(s.observables['total_energy'],initial,places=7)
-        s._settings['heat_rate']=2.
+        s.settings['heat_rate']=2.
         s._advance(1000)
         self.assertAlmostEqual(s.observables['total_energy']-initial,4.,places=7)
 
@@ -107,7 +114,7 @@ class SolverTests(unittest.TestCase):
     def test_barostat_extended_enthalpy_and_pressure(self):
         s=self.sim(N=108,rho=.005,ensemble='npt')
         s._advance(15000)
-        s._settings['ensemble']='nph';e=[];p=[]
+        s.settings['ensemble']='nph';e=[];p=[]
         for i in range(300):
             s._advance(100);o=s.observables;e.append(o['extended_enthalpy']);p.append(o['pressure'])
         self.assertLess(np.ptp(e)/np.mean(e),.001)
@@ -128,52 +135,56 @@ class SolverTests(unittest.TestCase):
         self.assertLess(abs(np.mean(pressures)/2e-7-1),.03)
 
     def test_saved_run_reload_resume_and_sampling_independence(self):
-        s=self.sim(N=32,model='diatomic-rigid')
-        a=s.run(storage_name="first",steps=251,thermo_every=43,trajectory_every=97)
+        sim=MDSimulation(output_dir=self.root)
+        start=self.system(N=32,model='diatomic-rigid')
+        a=sim.run(start,storage_name="first",steps=251,thermo_every=43,trajectory_every=97)
         self.assertEqual(a.metadata['completed_steps'],251)
         self.assertEqual(a.thermo.step.tolist(),[0,43,86,129,172,215,251])
         self.assertEqual([int(f['step']) for f in a.iter_frames()],[0,97,194,251])
-        resumed=Simulation.from_run(a)
-        s.run(storage_name="continued",steps=333,thermo_every=100,trajectory_every=None)
-        resumed.run(storage_name="restarted",steps=333,thermo_every=17,trajectory_every=71)
-        np.testing.assert_allclose(s.atoms.positions,resumed.atoms.positions,atol=1e-12)
-        np.testing.assert_allclose(s.atoms.velocities,resumed.atoms.velocities,atol=1e-12)
-        self.assertEqual(len(Run.find(self.root)),3)
+        continued=sim.run(a.state,storage_name="continued",steps=333,thermo_every=100,trajectory_every=None)
+        restarted=sim.run(Run.load(a.path).state,storage_name="restarted",steps=333,thermo_every=17,trajectory_every=71)
+        whole=sim.run(start,storage_name="whole",steps=584,thermo_every=584,trajectory_every=None)
+        for run in (restarted,whole):
+            np.testing.assert_array_equal(continued.state.atoms.positions,run.state.atoms.positions)
+            np.testing.assert_array_equal(continued.state.atoms.velocities,run.state.atoms.velocities)
+        self.assertEqual((continued.state.step,continued.thermo.step.iloc[0]),(584,251))
+        self.assertIsNone(start.atoms.velocities)
+        self.assertEqual(len(Run.find(self.root)),4)
         self.assertEqual(Run.load(a.path).thermo.shape,a.thermo.shape)
         self.assertEqual(len(a.load_frames()['positions']),4)
 
     def test_interrupt_and_numerical_failure_are_recorded(self):
         from unittest.mock import patch
-        import json
-        s=self.sim(N=32)
+        sim=MDSimulation(output_dir=self.root)
         advance=_core.advance
         def interrupted_advance(*args):
             result=list(advance(*args))
             if args[6]:result[4]=1
             return tuple(result)
         with patch.object(_core, 'advance', interrupted_advance):
-            run=s.run(steps=1000,thermo_every=100)
+            run=sim.run(self.system(N=32),steps=1000,thermo_every=100)
         self.assertEqual(run.metadata['status'],'interrupted')
         self.assertEqual(run.metadata['completed_steps'],100)
         self.assertEqual(int(run.thermo.step.iloc[-1]),100)
-        restart=Simulation.from_run(run)
-        np.testing.assert_array_equal(restart.atoms.velocities,s.atoms.velocities)
-        broken=self.sim(model='diatomic-rigid',N=32)
+        self.assertEqual(run.state.step,100)
+        reference=self.sim(N=32);reference._advance(100)
+        np.testing.assert_array_equal(run.state.atoms.velocities,reference.atoms.velocities)
         with self.assertRaises(ValueError):
-            broken.run(timestep=10,steps=100,storage_name='unstable')
+            sim.run(self.system(model='diatomic-rigid',N=32),timestep=10,steps=100,storage_name='unstable')
         failed=[r for r in Run.find(self.root) if r.metadata['label']=='unstable'][0]
         self.assertEqual(failed.metadata['status'],'failed')
         self.assertFalse((failed.path/'checkpoint.npz').exists())
-        with self.assertRaises(RuntimeError):broken.run(steps=10)
-        with self.assertRaises(ValueError):Simulation.from_run(failed)
+        with self.assertRaises(ValueError):failed.state
 
     def test_input_errors_and_readonly_views(self):
         for kwargs in (dict(N=1),dict(rho=-1),dict(temperature=-1),dict(ensemble='foo'),dict(heat_rate=5),dict(model='diatomic-rigid',ensemble='npt')):
             with self.assertRaises(ValueError):self.sim(**kwargs)
         s=self.sim(N=32)
+        sim=MDSimulation(output_dir=self.root)
         with self.assertRaises(ValueError):s.atoms.positions[0,0]=0
-        with self.assertRaises(ValueError):s.run(steps=1.5)
-        with self.assertRaises(ValueError):s.run(heat_rate=1)
+        with self.assertRaises(ValueError):sim.run(self.system(N=32),steps=1.5)
+        with self.assertRaises(ValueError):sim.run(self.system(N=32),heat_rate=1)
+        with self.assertRaises(TypeError):sim.run(None)
         with self.assertRaises(ValueError):
             _core.advance(s._x,s._v,s._x,s._f,s._box,s._mass,0,.005,2.5,.4,2.,1.,1,0,0.,-1.,1.,0.)
         self.assertFalse(list(Path(self.root).iterdir()))

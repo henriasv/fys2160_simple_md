@@ -9,7 +9,7 @@ from fys2160_md import Random, MDSimulation, HarmonicBond
 
 system = Random(N=100, rho=.01, molecule="diatomic",
                 bond=HarmonicBond(length=.7, stiffness=100))
-sim = MDSimulation(system, pair_potential="lj", epsilon=1, sigma=1,
+sim = MDSimulation(pair_potential="lj", epsilon=1, sigma=1,
                    exclude_bonded_pairs=True, temperature=2)
 ```
 
@@ -41,7 +41,8 @@ rescale the geometry, bond or cutoff; changing epsilon does not rescale the
 specified temperature. For example:
 
 ```python
-sim = MDSimulation(system, epsilon=.8, sigma=1.2, cutoff=3.0)
+sim = MDSimulation(epsilon=.8, sigma=1.2, cutoff=3.0)
+result = sim.run(system, steps=1000)
 ```
 
 Here cutoff is 2.5 times the chosen sigma. A stronger interaction or smaller

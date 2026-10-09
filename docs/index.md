@@ -17,7 +17,6 @@ from fys2160_md import FCC, MDSimulation
 
 system = FCC(N=500, rho=0.1)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -27,6 +26,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=10_000,
     thermo_every=100,
     trajectory_every=500,
@@ -35,7 +35,8 @@ result = sim.run(
 result.view()
 ```
 
-`System` holds the box and atoms. `MDSimulation(system, ...)` owns and evolves a copy. `Run` reads,
+`System` holds the box and atoms: the state. `MDSimulation(...)` holds the interactions and
+controls; `sim.run(state, ...)` evolves a copy of the state, and `run.state` continues from where it ended. `Run` reads,
 plots and replays the recorded result—even in a later Python session.
 
 <div class="grid cards" markdown>

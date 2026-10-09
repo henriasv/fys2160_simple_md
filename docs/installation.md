@@ -24,7 +24,6 @@ from fys2160_md import FCC, MDSimulation
 
 system = FCC(N=108, rho=.1)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -34,6 +33,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=1000,
     thermo_every=100,
     trajectory_every=500,

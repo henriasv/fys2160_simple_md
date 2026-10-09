@@ -18,7 +18,7 @@ class SpeciesBondTests(unittest.TestCase):
             copy=system.bond;copy['O2']=RigidBond(length=1.2)
             self.assertEqual(system.bond['N2'].length,.6)
             self.assertEqual(system.bond['O2'].length,.9)
-            sim=MDSimulation(system,ensemble='nve',temperature=.3)
+            sim=MDSimulation(ensemble='nve',temperature=.3)._engine(system)
             for _ in range(10):sim._advance(100)
             np.testing.assert_allclose(np.linalg.norm(sim._bond_vectors(),axis=1),expected,atol=1e-12)
             np.testing.assert_allclose(np.sum(sim._bond_vectors()*(sim._v[::2]-sim._v[1::2]),axis=1),0,atol=1e-12)
@@ -26,8 +26,8 @@ class SpeciesBondTests(unittest.TestCase):
     def test_independent_species_spring_energies_forces_and_periods(self):
         x=np.array([[3.,3,3],[3.8,3,3],[13.,13,13],[14.,13,13]])
         bonds={'A':HarmonicBond(length=.7,stiffness=40),'B':HarmonicBond(length=.9,stiffness=80)}
-        sim=MDSimulation(System(x,30,velocities=np.zeros_like(x),masses=[1,1,2,2],
-            species=['A','A','B','B'],molecule='diatomic',bond=bonds),ensemble='nve',timestep=.0002)
+        sim=MDSimulation(ensemble='nve',timestep=.0002)._engine(System(x,30,velocities=np.zeros_like(x),masses=[1,1,2,2],
+            species=['A','A','B','B'],molecule='diatomic',bond=bonds))
         np.testing.assert_allclose(sim.forces[:,0],[4,-4,8,-8],atol=1e-12)
         self.assertAlmostEqual(sim._potential,.6,places=12)
         initial=sim.observables['total_energy'];sim._advance(1000)
@@ -40,21 +40,22 @@ class SpeciesBondTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             for bonds in ({'A':RigidBond(.6),'B':RigidBond(.9)},
                           {'A':HarmonicBond(.7,60),'B':Class2Bond(.8,40,-30,50)}):
-                sim=MDSimulation(Random(species={'A':12,'B':4},rho=.005,molecule='diatomic',bond=bonds),output_dir=folder)
-                result=sim.run(steps=111,thermo_every=17,trajectory_every=31)
+                start=Random(species={'A':12,'B':4},rho=.005,molecule='diatomic',bond=bonds)
+                sim=MDSimulation(output_dir=folder)
+                result=sim.run(start,steps=111,thermo_every=17,trajectory_every=31)
                 self.assertEqual(result.thermo.step.tolist(),[0,17,34,51,68,85,102,111])
                 self.assertEqual([int(f['step']) for f in result.iter_frames()],[0,31,62,93,111])
-                resumed=MDSimulation.from_run(result)
-                self.assertEqual(resumed.system.bond,bonds)
-                sim._advance(100);resumed._advance(100)
-                np.testing.assert_array_equal(sim.atoms.positions,resumed.atoms.positions)
-                np.testing.assert_array_equal(sim.atoms.velocities,resumed.atoms.velocities)
-            legacy=sim.run(steps=10,sample_every=2,save_every=None)
+                self.assertEqual(result.state.bond,bonds)
+                whole=sim._engine(start);whole._advance(211)
+                resumed=sim._engine(result.state);resumed._advance(100)
+                np.testing.assert_array_equal(whole.atoms.positions,resumed.atoms.positions)
+                np.testing.assert_array_equal(whole.atoms.velocities,resumed.atoms.velocities)
+            legacy=sim.run(result.state,steps=10,sample_every=2,save_every=None)
             self.assertEqual(legacy.metadata['thermo_every'],2)
             self.assertIsNone(legacy.metadata['trajectory_every'])
             self.assertFalse(list((legacy.path/'frames').glob('*.npz')))
-            with self.assertRaises(TypeError):sim.run(thermo_every=100,sample_every=5)
-            with self.assertRaises(TypeError):sim.run(trajectory_every=500,save_every=10)
+            with self.assertRaises(TypeError):sim.run(start,thermo_every=100,sample_every=5)
+            with self.assertRaises(TypeError):sim.run(start,trajectory_every=500,save_every=10)
 
     def test_mapping_errors_are_explicit(self):
         for bonds in ({'A':RigidBond(.7)}, {'A':RigidBond(.7),'B':HarmonicBond()},

@@ -24,8 +24,8 @@ All values use the same LJ reduced reference units.
 | `storage_name="gas"` | Saved run folder; using the name again replaces its contents |
 
 `thermo_every` and `trajectory_every` control output, not the integration timestep.
-Repeated `sim.run(...)` calls continue the same simulation and retain its physical
-settings. Thermostat coupling (`friction=1`), random seed (`seed=87287`) and other
+Each `sim.run(state, ...)` starts from the state you give it; continue with
+`sim.run(run.state, ...)`. Controls given to one run apply only to that run. Thermostat coupling (`friction=1`), random seed (`seed=87287`) and other
 controls are described in the [API reference](../api/simulation.md).
 
 ## Pressure of a gas
@@ -36,7 +36,6 @@ from fys2160_md import FCC, Random, MDSimulation
 
 system = Random(N=500, rho=.01)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -46,13 +45,15 @@ sim = MDSimulation(
     cutoff=2.5,
     storage_name="gas",
 )
-# Equilibrate, then record a measurement run under the same conditions.
-sim.run(
+# Equilibrate, then record a measurement run from the equilibrated state.
+equilibrated = sim.run(
+    system,
     steps=10_000,
     thermo_every=100,
     trajectory_every=500,
 )
 result = sim.run(
+    equilibrated.state,
     steps=10_000,
     thermo_every=100,
     trajectory_every=500,
@@ -79,7 +80,6 @@ time to equilibrate before interpreting a mean.
 ```python
 system = FCC(N=256, rho=.1)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -89,6 +89,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=1000,
     heat_rate=1,
     thermo_every=100,
@@ -113,7 +114,6 @@ from fys2160_md import Random, MDSimulation, HarmonicBond, RigidBond
 system = Random(N=100, rho=.01, molecule="diatomic",
                 bond=HarmonicBond(length=.7, stiffness=100))
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -124,6 +124,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    system,
     steps=5000,
     thermo_every=100,
     trajectory_every=500,
@@ -145,7 +146,6 @@ a stiffer spring may need a smaller timestep. See [Bonds and interactions](../ap
 ```python
 system = FCC(N=500, rho=.005)
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -157,6 +157,7 @@ sim = MDSimulation(
     storage_name="pressure-control",
 )
 result = sim.run(
+    system,
     steps=10_000,
     thermo_every=100,
     trajectory_every=500,
@@ -205,7 +206,6 @@ system = Random(
     min_distance=1.1,
 )
 sim = MDSimulation(
-    system,
     pair_potential="lj",
     epsilon={"A": 1, "B": .5},
     sigma={"A": 1, "B": 1.2},
@@ -216,6 +216,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 mixture = sim.run(
+    system,
     steps=3000,
     thermo_every=100,
     trajectory_every=30,
@@ -237,8 +238,8 @@ it is not automatically multiplied by each species' sigma.
 ```python
 import numpy as np
 
-atoms = sim.system.atoms
-for name in sim.system.species:
+atoms = mixture.state.atoms
+for name in mixture.state.species:
     selected = atoms.species == name
     mean_v2 = np.mean(np.sum(atoms.velocities[selected]**2, axis=1))
     print(name, selected.sum(), mean_v2)
@@ -289,7 +290,6 @@ air = Random(
     min_distance=1.1,
 )
 sim = MDSimulation(
-    air,
     pair_potential="lj",
     epsilon={"N2": 1, "O2": 0.9},
     sigma={"N2": 1, "O2": 1.05},
@@ -301,6 +301,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    air,
     steps=3000,
     thermo_every=100,
     trajectory_every=30,

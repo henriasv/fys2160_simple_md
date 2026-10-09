@@ -2,7 +2,7 @@
 import tempfile
 import unittest
 import numpy as np
-from fys2160_md import FCC, Random, System, Simulation
+from fys2160_md import FCC, Random, System, MDSimulation
 
 
 def distances(system):
@@ -55,38 +55,36 @@ class GeometryTests(unittest.TestCase):
         self.assertGreaterEqual(d.min(),.9)
         self.assertEqual(s.N,32);self.assertEqual(len(s.atoms),64)
 
-    def test_simulations_copy_the_same_starting_system_and_resume(self):
+    def test_runs_take_a_state_and_return_a_new_one(self):
         with tempfile.TemporaryDirectory() as folder:
             system=Random(N=32,box=[8,9,10])
             initial=system.atoms.positions.copy()
-            a=Simulation(system,temperature=1.,output_dir=folder)
-            b=Simulation(system,temperature=3.,output_dir=folder)
-            untouched=b.atoms.positions.copy()
-            run=a.run(steps=20,storage_name='random')
-            a.run(steps=10,storage_name='continued')
-            self.assertEqual(a.step,30);self.assertEqual(b.step,0)
-            np.testing.assert_array_equal(b.atoms.positions,untouched)
+            sim=MDSimulation(temperature=1.,output_dir=folder)
+            first=sim.run(system,steps=20,storage_name='first')
+            hot=sim.run(system,steps=20,temperature=3.,storage_name='hot')  # branch from the same state
             np.testing.assert_array_equal(system.atoms.positions,initial)
             self.assertIsNone(system.atoms.velocities)
-            self.assertIsNot(a.system,system)
-            np.testing.assert_array_equal(a.system.atoms.positions,a.atoms.positions)
-            self.assertAlmostEqual(b.observables['temperature'],3.)
-            resumed=Simulation.from_run(run)
-            self.assertEqual(resumed.step,20)
-            np.testing.assert_array_equal(resumed.system.box.lengths,[8,9,10])
-            resumed.run(steps=10,storage_name='resumed')
-            np.testing.assert_array_equal(resumed.system.atoms.positions,a.system.atoms.positions)
-            np.testing.assert_array_equal(resumed.system.atoms.velocities,a.system.atoms.velocities)
-            with self.assertRaises(TypeError):Simulation(None)
+            self.assertEqual((system.step,system.time),(0,0.))
+            self.assertEqual((first.state.step,first.state.time),(20,20*.005))
+            self.assertAlmostEqual(hot.thermo.temperature.iloc[0],3.)
+            self.assertEqual(sim.settings['temperature'],1.)  # run arguments do not carry over
+            second=sim.run(first.state,steps=10,storage_name='second')
+            whole=sim.run(system,steps=30,storage_name='whole')
+            self.assertEqual(second.thermo.step.tolist(),[20,30])
+            np.testing.assert_array_equal(second.state.atoms.positions,whole.state.atoms.positions)
+            np.testing.assert_array_equal(second.state.atoms.velocities,whole.state.atoms.velocities)
+            np.testing.assert_array_equal(second.state.box.lengths,[8,9,10])
+            with self.assertRaisesRegex(TypeError,'Pass the state to each run'):MDSimulation(system)
+            with self.assertRaises(TypeError):sim.run(None)
 
     def test_geometry_has_no_protocol_and_does_not_require_solver_box_size(self):
         tiny=FCC(N=4,rho=1.)
         self.assertIsNone(tiny.atoms.velocities)
         self.assertFalse(hasattr(tiny,'run'))
         self.assertFalse(hasattr(tiny,'settings'))
-        self.assertFalse(hasattr(tiny,'step'))
-        with self.assertRaises(ValueError):Simulation(tiny)
-        Simulation(tiny,cutoff=.5)  # Integration, not geometry, imposes a cutoff.
+        self.assertEqual((tiny.step,tiny.time),(0,0.))
+        with self.assertRaises(ValueError):MDSimulation()._engine(tiny)
+        MDSimulation(cutoff=.5)._engine(tiny)  # Integration, not geometry, imposes a cutoff.
         for constructor in (FCC,Random):
             with self.assertRaises(TypeError):constructor(temperature=2)
             with self.assertRaises(TypeError):constructor(storage_name='gas')
@@ -96,7 +94,7 @@ class GeometryTests(unittest.TestCase):
         v=np.array([[.1,0,0],[-.1,0,0]])
         system=System(x,10,velocities=v)
         x[:]=0;v[:]=0
-        sim=Simulation(system,temperature=99,ensemble='nve')
+        sim=MDSimulation(temperature=99,ensemble='nve')._engine(system)
         np.testing.assert_array_equal(sim.atoms.velocities,[[.1,0,0],[-.1,0,0]])
         sim._advance(5)
         np.testing.assert_array_equal(system.atoms.positions,[[4,5,5],[5.2,5,5]])
@@ -106,11 +104,12 @@ class GeometryTests(unittest.TestCase):
         snapshot.setflags(write=True);snapshot[:]=0
         self.assertFalse(np.all(sim.system.atoms.positions==0))
 
-    def test_pressure_control_updates_owned_system_box(self):
+    def test_pressure_control_changes_only_the_output_box(self):
         system=FCC(N=108,rho=.05)
         original=system.box.lengths.copy()
-        sim=Simulation(system,ensemble='npt',temperature=2,pressure=.2)
+        sim=MDSimulation(ensemble='npt',temperature=2,pressure=.2)._engine(system)
         sim._advance(100)
-        self.assertFalse(np.array_equal(sim.system.box.lengths,original))
+        state=sim.state()
+        self.assertFalse(np.array_equal(state.box.lengths,original))
         np.testing.assert_array_equal(system.box.lengths,original)
-        self.assertAlmostEqual(sim.system.rho,sim.observables['density'])
+        self.assertAlmostEqual(state.rho,sim.observables['density'])

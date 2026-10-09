@@ -24,7 +24,7 @@ Loading a run reads files and does **not** start a simulation.
 saved.view(max_frames=150, max_atoms=1500, projection="orthographic", zoom=1.0)
 ```
 
-The default samples at most 150 saved frames and 1500 atoms; full recorded data
+The default samples at most 150 saved frames and 3000 atoms; full recorded data
 remain on disk. `projection` is `orthographic` or `perspective`; initial zoom
 must be between 0.25 and 3. Camera controls and playback work in exported HTML.
 This needs WebGL 2, but no Python kernel, remote scripts or simulation server.
@@ -60,8 +60,7 @@ Frame arrays include positions, unwrapped coordinates, velocities, box, step and
 time. A final checkpoint is kept even when `trajectory_every=None`.
 
 ```python
-sim = MDSimulation.from_run(saved)
-continued = sim.run(steps=1000, storage_name="continued")
+continued = sim.run(saved.state, steps=1000, storage_name="continued")
 ```
 
 A `Run` refers to a directory, not an immutable copy. Replacing that storage name

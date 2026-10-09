@@ -31,6 +31,32 @@ class Run:
         return [cls(p.parent) for p in sorted(Path(directory).glob('*/metadata.json'))]
 
     @property
+    def state(self):
+        """Final state of this run, a System: pass it to the next sim.run.
+
+        It holds positions, velocities, box, masses and species, plus the clock
+        and thermostat/barostat state, so continuing from it matches one longer run.
+        """
+        from .system import System
+        from .bonds import read_bond
+        if self.metadata.get('status') not in ('completed', 'interrupted') or not (self.path/'checkpoint.npz').exists():
+            raise ValueError('This run did not finish, so it has no final state.')
+        c = self.metadata['configuration']
+        bond = {'bond': read_bond(c['bond'])} if 'bond' in c else {}
+        with np.load(self.path/'checkpoint.npz', allow_pickle=False) as data:
+            state = System(data['positions'], data['box'], velocities=data['velocities'], masses=data['masses'],
+                           model=c['model'], boundary=c.get('boundary', 'periodic'),
+                           species=data['species'] if 'species' in data else None, units=c.get('units', 'reduced'),
+                           unwrapped=data['unwrapped'], time=float(data['time']), step=int(data['step']), **bond)
+            state._rng = int(data['rng'])
+            state._heat = float(data['heat_added'])
+            state._rate = float(data['barostat_rate'])
+            if 'pppm_settings' in data:
+                accuracy, cutoff = (float(v) for v in data['pppm_settings'])
+                state._pppm = (data['pppm_state'].copy(), accuracy, cutoff)
+        return state
+
+    @property
     def thermo(self) -> pd.DataFrame:
         """Recorded observables for the whole system, in the run's units (see metadata['units'])."""
         return pd.read_csv(self.path / 'thermo.csv')

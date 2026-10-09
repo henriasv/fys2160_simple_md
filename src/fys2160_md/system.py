@@ -52,13 +52,16 @@ class Atoms:
 
 
 class System:
-    """Particle state with periodic or open boundaries and optional velocities.
+    """The state of a system: box, atoms, optional velocities and a clock.
 
-    MDSimulation copies this state, initializes missing velocities, and evolves
-    its own copy. All public array accessors return read-only snapshots.
+    ``MDSimulation.run(system, ...)`` evolves a copy and never changes this one;
+    the run's final state is ``run.state``. A state from a run also carries the
+    simulation time, step count and thermostat/barostat state, so continuing from
+    it is identical to one longer run. All public arrays are read-only snapshots.
     """
 
-    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
+    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced",
+                 unwrapped=None, time=0., step=0):
         if boundary not in ("periodic", "open"):
             raise ValueError("boundary must be periodic or open.")
         self._boundary = boundary
@@ -105,6 +108,19 @@ class System:
         self._v=None if velocities is None else np.array(velocities,dtype=float,order='C',copy=True)
         if self._v is not None and (self._v.shape!=x.shape or not np.isfinite(self._v).all()):
             raise ValueError('velocities must be a finite (N,3) array.')
+        self._u=None if unwrapped is None else np.array(unwrapped,dtype=float,order='C',copy=True)
+        if self._u is not None and (self._u.shape!=x.shape or not np.isfinite(self._u).all()):
+            raise ValueError('unwrapped positions must be a finite (N,3) array.')
+        self._time=float(time)
+        if not np.isfinite(self._time):
+            raise ValueError('time must be finite.')
+        self._step=_integer(step,'step',0)
+        # Thermostat random-number state, barostat rate and PPPM mesh choice
+        # (state array, kspace_accuracy, coulomb_cutoff), carried between runs.
+        self._rng=None
+        self._rate=0.
+        self._pppm=None
+        self._heat=0.  # total energy added by heat_rate along the runs leading here
         if model=='diatomic-rigid':
             bond=self._x[::2]-self._x[1::2]
             bond-=lengths*np.rint(bond/lengths)
@@ -127,6 +143,16 @@ class System:
     def boundary(self):
         """Open systems use box only as a viewing frame, without walls or images."""
         return self._boundary
+
+    @property
+    def time(self):
+        """Simulation time of this state, in the system's time unit."""
+        return self._time
+
+    @property
+    def step(self):
+        """Number of MD steps taken to reach this state."""
+        return self._step
 
     @property
     def units(self):
@@ -181,12 +207,16 @@ class System:
         return 3*len(self._x)-3-{'diatomic-rigid': self.N, 'water-rigid': 3*self.N}.get(self.model, 0)
 
     def copy(self):
-        """Independent copy of geometry and any supplied velocities."""
-        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units)
+        """Independent copy of the complete state."""
+        other=System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units,
+                     unwrapped=self._u,time=self._time,step=self._step)
+        other._rng,other._rate,other._heat=self._rng,self._rate,self._heat
+        other._pppm=None if self._pppm is None else (self._pppm[0].copy(),)+tuple(self._pppm[1:])
+        return other
 
     @classmethod
     def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
         return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary,units=units)
 
     def __repr__(self):
-        return f'System(model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None})'
+        return f'System(model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None}, time={self._time:g}, step={self._step})'

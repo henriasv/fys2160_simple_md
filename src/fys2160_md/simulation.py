@@ -1,4 +1,4 @@
-"""Integration, experiment controls and recording for an owned physical system."""
+"""Interactions, run controls and recording. Each run evolves a copy of a given state."""
 from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +12,9 @@ from . import _core
 from .system import System, MODELS, _positive, _integer, _readonly
 from .results import Run, write_json
 from .species import parameter, per_atom, charges as _charges
-from .bonds import bond_config, read_bond
+from .bonds import bond_config
 from .units import units as _units, AVOGADRO_PER_CM3_A3
+
 
 def _storage_name(value):
     if not isinstance(value, str) or not value or value != value.strip() or len(value) > 100:
@@ -50,43 +51,51 @@ def _legacy_output_names(method):
     return wrapped
 
 
-class MDSimulation:
-    """An experiment evolving its own copy of a physical System.
+def _seed(value):
+    value = _integer(value, 'seed')
+    if value >= 2**64:
+        raise ValueError('seed must be below 2**64.')
+    return value
 
-    Missing velocities are initialized at temperature. Explicit velocities are
-    preserved; temperature then specifies only the thermostat target. Repeated
-    run calls continue this simulation's clock, state and physical settings.
+
+def _species_values(value, name, zero):
+    """Check scalar or per-species parameters before the species are known."""
+    if isinstance(value, dict):
+        if not value:
+            raise ValueError(f'{name} mapping must not be empty.')
+        return {k: _positive(v, name, zero=zero) for k, v in value.items()}
+    return _positive(value, name, zero=zero)
+
+
+class MDSimulation:
+    """Interactions and default run controls; it holds no particles.
+
+    ``run = sim.run(state, steps=...)`` evolves a copy of ``state`` (a System)
+    and saves the result. Continue from ``run.state``. Every run uses the
+    controls given here plus its own arguments; nothing carries over between
+    runs except through the state you pass in.
     """
 
-    def __init__(self, system, *, pair_potential='lj', epsilon=1., sigma=1., mixing_rule='lorentz-berthelot', exclude_bonded_pairs=True, temperature=None, ensemble='nvt', timestep=None,
+    def __init__(self, system=None, *, pair_potential='lj', epsilon=1., sigma=1., mixing_rule='lorentz-berthelot', exclude_bonded_pairs=True, temperature=None, ensemble='nvt', timestep=None,
                  cutoff=None, G=1., softening=.05, skin=None, friction=None, pressure=None, pressure_time=None,
-                 heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation', units=None,
+                 heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation', units='reduced',
                  charge=None, coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True):
-        if not isinstance(system,System):
-            raise TypeError('Pass a System, such as FCC(N=500, rho=0.1).')
-        if len(system.atoms)>20000:
-            raise ValueError('This course solver supports at most 20000 atoms.')
+        if system is not None:
+            raise TypeError('MDSimulation holds interactions and controls only. Pass the state to each run: '
+                            'run = sim.run(system, steps=...), then continue with sim.run(run.state, ...).')
         if pair_potential not in ('lj', 'lj96', 'gravity'):
             raise ValueError('pair_potential must be lj, lj96 or gravity.')
-        self._units = _units(system.units if units is None else units)
-        if self._units.name != system.units:
-            raise ValueError(f'units="{self._units.name}" does not match the system units ("{system.units}").')
+        self._units = _units(units)
         if (charge is None) != (coulomb is None):
             raise ValueError('Charges need coulomb="pppm" (long-range electrostatics), and coulomb needs charge.')
         if coulomb not in (None, 'pppm'):
             raise ValueError('coulomb must be "pppm".')
         real = self._units.name == 'real'
-        self._engine = 'molecular' if (system.model == 'water-rigid' or real or charge is not None) else 'pair'
-        if self._engine == 'molecular':
-            if pair_potential != 'lj':
-                raise ValueError('Water, charges and real units use the 12-6 Lennard-Jones potential (pair_potential="lj").')
-            if system.model.startswith('diatomic'):
-                raise ValueError('Diatomic molecules use reduced units without charges.')
+        if (real or charge is not None) and pair_potential != 'lj':
+            raise ValueError('Water, charges and real units use the 12-6 Lennard-Jones potential (pair_potential="lj").')
         if not isinstance(lj_shift, bool):
             raise TypeError('lj_shift must be True or False.')
-        if self._engine == 'pair' and not lj_shift:
-            raise ValueError('lj_shift=False is available for water, charges and real units.')
-        if self._engine == 'pair' and coulomb_cutoff is not None:
+        if charge is None and coulomb_cutoff is not None:
             raise ValueError('coulomb_cutoff applies only to charged systems.')
         if real:
             missing = [name for name, value in (('temperature', temperature), ('timestep', timestep), ('cutoff', cutoff)) if value is None]
@@ -94,131 +103,38 @@ class MDSimulation:
                 raise ValueError(f'Real units need explicit {", ".join(missing)} (K, fs, Å).')
         defaults = dict(skin=2., friction=.005, pressure=None, pressure_time=1000.) if real else dict(temperature=2., skin=.4, friction=1., pressure=.01, pressure_time=5.)
         temperature = defaults['temperature'] if temperature is None else temperature
-        skin = defaults['skin'] if skin is None else skin
-        friction = defaults['friction'] if friction is None else friction
-        pressure = defaults['pressure'] if pressure is None else pressure
-        pressure_time = defaults['pressure_time'] if pressure_time is None else pressure_time
         if pair_potential == 'gravity':
-            if system.boundary != 'open' or system.model != 'atomic':
-                raise ValueError('Gravity requires an unbonded System with boundary="open".')
             if cutoff is not None:
                 raise ValueError('Isolated gravity has no cutoff; use cutoff=None.')
-            if len(system.atoms) > 4096:
-                raise ValueError('Direct all-pairs gravity supports at most 4096 particles.')
             if epsilon != 1. or sigma != 1.:
                 raise ValueError('Gravity uses G and softening, not LJ epsilon/sigma.')
-        elif system.boundary != 'periodic':
-            raise ValueError('Lennard–Jones currently requires periodic boundaries.')
         self._G = _positive(G, 'G')
         self._softening = _positive(softening, 'softening', zero=True)
         if not isinstance(exclude_bonded_pairs, bool):
             raise TypeError('exclude_bonded_pairs must be True or False.')
         if mixing_rule != 'lorentz-berthelot':
             raise ValueError('mixing_rule must be "lorentz-berthelot".')
-        zero = self._engine == 'molecular'
-        self._epsilon = parameter(epsilon, system.species, 'epsilon', zero=zero)
-        self._sigma = parameter(sigma, system.species, 'sigma', zero=zero)
-        self._charge = None if charge is None else _charges(charge, system.species)
+        zero = real or charge is not None
+        self._epsilon = _species_values(epsilon, 'epsilon', zero)
+        self._sigma = _species_values(sigma, 'sigma', zero)
+        self._charge = None if charge is None else _charges(charge, tuple(charge) if isinstance(charge, dict) else ())
         self._coulomb = coulomb
         self._lj_shift = lj_shift
-        self._pair_parameters = np.ascontiguousarray(np.column_stack((per_atom(self._epsilon, system._species), per_atom(self._sigma, system._species))))
         self._pair_potential = pair_potential
         self._exclude_bonded_pairs = exclude_bonded_pairs
-        self._system=system.copy()
-
-        self._x=self._system._x
-        self._box=self._system._box
-        self._mass=self._system._mass
-        self.cutoff=None if pair_potential == 'gravity' else _positive(2.5 if cutoff is None else cutoff,'cutoff')
-        self.skin=_positive(skin,'skin')
-        self.friction=_positive(friction,'friction')
-        self.pressure_time=_positive(pressure_time,'pressure_time')
-        self.seed=_integer(seed,'seed')
-        if self.seed>=2**64:
-            raise ValueError('seed must be below 2**64.')
-        self.output_dir=Path(output_dir).expanduser()
-        self.storage_name=_storage_name(storage_name)
-        self._settings=dict(ensemble=ensemble,
-                            timestep=(.005 if self.model=='atomic' else .002) if timestep is None else timestep,
-                            temperature=temperature,pressure=pressure,heat_rate=heat_rate)
-        if self._engine == 'molecular':
-            self._settings.update(coulomb_cutoff=self.cutoff if coulomb_cutoff is None else coulomb_cutoff,
+        self.cutoff = None if pair_potential == 'gravity' else _positive(2.5 if cutoff is None else cutoff, 'cutoff')
+        self.skin = _positive(defaults['skin'] if skin is None else skin, 'skin')
+        self.friction = _positive(defaults['friction'] if friction is None else friction, 'friction')
+        self.pressure_time = _positive(defaults['pressure_time'] if pressure_time is None else pressure_time, 'pressure_time')
+        self.seed = _seed(seed)
+        self.output_dir = Path(output_dir).expanduser()
+        self.storage_name = _storage_name(storage_name)
+        self._defaults = dict(ensemble=ensemble, timestep=timestep, temperature=temperature,
+                              pressure=defaults['pressure'] if pressure is None else pressure, heat_rate=heat_rate)
+        if charge is not None:
+            self._defaults.update(coulomb_cutoff=self.cutoff if coulomb_cutoff is None else coulomb_cutoff,
                                   kspace_accuracy=kspace_accuracy)
-            self._prepare_molecular()
-        self._deform = None
-        self._validate_settings(self._settings)
-        if self._system._v is None:
-            rng=np.random.default_rng(self.seed)
-            self._v=np.ascontiguousarray(rng.normal(size=self._x.shape)/np.sqrt(self._mass[:,None]))
-            self._v-=(self._v*self._mass[:,None]).sum(axis=0)/self._mass.sum()
-            if self.model=='diatomic-rigid':self._project_velocities()
-            if self.model=='water-rigid':_core.project_molecular_velocities(self._x,self._v,self._box,self._mass,self._constraints)
-            self._v*=np.sqrt(self.dof*self._units.boltzmann*self._settings['temperature']/(self._units.mvv2e*np.sum(self._mass[:,None]*self._v**2)))
-            self._system._v=self._v
-        else:
-            self._v=self._system._v
-            momentum=self._v*self._mass[:,None]
-            if np.linalg.norm(momentum.sum(axis=0))>1e-10*max(1.,np.linalg.norm(momentum)):
-                raise ValueError('Remove centre-of-mass velocity before starting this solver.')
-        self._u=self._x.copy()
-        self._f=np.zeros_like(self._x)
-        self.step=0
-        self.time=0.
-        self.heat_added=0.
-        self._rng=self.seed
-        self._rate=0.
-        self._baromass=(self.dof+3)*max(self._settings['temperature'],1e-6)*self.pressure_time**2
-        if self._engine == 'molecular':
-            # Barostat inertia from centre-of-mass degrees of freedom (3N-3)+3.
-            self._baromass=3*self.particles*self._units.boltzmann*max(self._settings['temperature'],1e-6)*self.pressure_time**2
-        self._failed=False
-        self._advance(0)
-
-    def _prepare_molecular(self):
-        """Type tables, per-atom charges and rigid-water geometry for the native solver."""
-        system = self._system
-        names = system.species
-        index = {name: k for k, name in enumerate(names)}
-        self._types = np.ascontiguousarray([index[s] for s in system._species], dtype=np.intc)
-        value = lambda p, name: p[name] if isinstance(p, dict) else p
-        eps = np.array([value(self._epsilon, n) for n in names])
-        sig = np.array([value(self._sigma, n) for n in names])
-        if np.any((eps > 0) & (sig <= 0)):
-            raise ValueError('sigma must be positive for every species with epsilon > 0.')
-        # Lorentz-Berthelot mixing; species with epsilon=0 have no LJ interactions.
-        self._epsilon_table = np.ascontiguousarray(np.sqrt(np.outer(eps, eps)))
-        self._sigma_table = np.ascontiguousarray(.5*(sig[:, None]+sig[None, :]))
-        q = per_atom(self._charge, system._species) if self._charge is not None else np.zeros(len(system._species))
-        if self._charge is not None and abs(q.sum()) > 1e-8*max(1., np.abs(q).sum()):
-            raise ValueError(f'The total charge must be zero; these charges sum to {q.sum():.6g} e.')
-        self._charges = np.ascontiguousarray(q)
-        self._pppm_state = np.zeros(8)
-        water = system.bond if system.model == 'water-rigid' else None
-        self._constraints = water.constraints if water else (1., 1., 1.)
-        self._alpha = water.alpha if water else 0.
-
-    def _validate_settings(self, config):
-        if self.pair_potential == 'gravity' and config['ensemble'] != 'nve':
-            raise ValueError('Isolated gravity uses ensemble="nve" (no thermostat, walls or barostat).')
-        if config['ensemble'] not in ('nve', 'nvt', 'nph', 'npt'):
-            raise ValueError('ensemble must be nve, nvt, nph or npt.')
-        if config['ensemble'] in ('nph', 'npt') and config['pressure'] is None:
-            raise ValueError(f'Set pressure ({self._units.pressure_unit}) for {config["ensemble"]}.')
-        for key in ('timestep', 'temperature', 'pressure'):
-            if config[key] is not None:
-                config[key] = _positive(config[key], key, zero=(key != 'timestep'))
-        if self._engine == 'molecular':
-            config['coulomb_cutoff'] = _positive(config['coulomb_cutoff'], 'coulomb_cutoff')
-            config['kspace_accuracy'] = _positive(config['kspace_accuracy'], 'kspace_accuracy')
-            if config['kspace_accuracy'] >= 1:
-                raise ValueError('kspace_accuracy is a relative force accuracy, such as 1e-5.')
-        config['heat_rate'] = float(config['heat_rate'])
-        if not np.isfinite(config['heat_rate']):
-            raise ValueError('heat_rate must be finite (total reduced energy per time).')
-        if config['heat_rate'] and config['ensemble'] in ('nvt', 'npt'):
-            raise ValueError('Turn off the thermostat (nve or nph) before adding/removing heat.')
-        if self._engine == 'pair' and self.model != 'atomic' and config['ensemble'] in ('nph', 'npt'):
-            raise ValueError('Pressure control is supported for atoms and rigid water only.')
+        _check_controls(dict(self._defaults), self)
 
     @property
     def G(self):
@@ -265,24 +181,329 @@ class MDSimulation:
         return self._exclude_bonded_pairs
 
     @property
+    def settings(self):
+        """Default run controls; each run may override them for that run only."""
+        return self._defaults.copy()
+
+    def _engine(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
+                heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None):
+        """Working copy of state for one run, with this run's controls resolved."""
+        if not isinstance(state, System):
+            raise TypeError('Pass a System as the state, such as FCC(N=500, rho=0.1) or run.state.')
+        if self._charge is None and (coulomb_cutoff is not None or kspace_accuracy is not None):
+            raise ValueError('coulomb_cutoff and kspace_accuracy apply only to charged systems.')
+        settings = self.settings
+        for key, value in dict(timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
+                               heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy).items():
+            if value is not None:
+                settings[key] = value
+        return _Engine(self, state, settings, None if seed is None else _seed(seed))
+
+    @_legacy_output_names
+    def run(self, state, steps=1000, *, timestep=None, ensemble=None, temperature=None, pressure=None,
+            heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None,
+            thermo_every=100, trajectory_every=500, show=False, max_fps=None, frame_every=100, storage_name=None):
+        """Evolve a copy of ``state`` and save the run; the final state is ``run.state``.
+
+        Controls given here apply to this run only; omitted ones take the values
+        given to MDSimulation. A ``temperature`` or ``pressure`` is the target from
+        the first step: a step change, not a ramp. Velocities are not reset; the
+        thermostat (and barostat) relax the system towards the new target. A state
+        without velocities gets random ones at ``temperature``.
+
+        The clock continues from the state's time and step. The thermostat continues
+        the state's random sequence; give ``seed`` for a different one. Results go to
+        output_dir/storage_name; reusing a name replaces the old result. Sampling
+        and trajectory intervals are in steps; ``trajectory_every=None`` saves no
+        frames but keeps thermo data and the final state. ``show=True`` gives a live
+        3D view in a notebook; ``max_fps`` optionally paces execution at
+        ``frame_every`` MD steps per displayed frame without changing physical dt.
+
+        For charged systems, coulomb_cutoff and kspace_accuracy may be set per run.
+        The PPPM mesh is chosen as in LAMMPS and kept in the state; it is chosen
+        again when these settings change or the box has changed by more than 5%.
+        ``deform=s`` (nve/nvt only) scales every box length linearly in time to s
+        times its starting value, moving whole molecules with their centres of mass.
+        """
+        storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
+        steps = _integer(steps, 'steps', 0)
+        thermo_every = _integer(thermo_every, 'thermo_every')
+        if trajectory_every is not None:
+            trajectory_every = _integer(trajectory_every, 'trajectory_every')
+        frame_every = _integer(frame_every, 'frame_every')
+        if max_fps is not None:
+            max_fps = _positive(max_fps, 'max_fps')
+            if not show:
+                raise ValueError('max_fps is a live-view option; set show=True.')
+        engine = self._engine(state, timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
+                              heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed)
+        if deform is not None:
+            deform = _positive(deform, 'deform')
+            if engine.kind != 'molecular':
+                raise ValueError('deform is available for water, charges and real units.')
+            if engine.settings['ensemble'] not in ('nve', 'nvt'):
+                raise ValueError('deform needs ensemble="nve" or "nvt" (no barostat).')
+        live = None
+        if show:
+            from .visualization import LiveView
+            live = LiveView(max_fps=max_fps, frame_every=frame_every)
+        start = engine.step
+        if deform is not None and steps:
+            engine._deform = (engine._box.copy(), deform, start, steps)
+        path = self.output_dir.resolve()/storage_name
+        _replace_run_directory(path)
+        meta = dict(schema_version=1, package_version='0.1.0', label=storage_name,
+                    storage_name=storage_name,
+                    created_at=datetime.now(timezone.utc).isoformat(), status='running',
+                    configuration={**engine._config(), 'storage_name': storage_name}, atoms=len(engine._x),
+                    molecules=engine.particles if engine.model != 'atomic' else 0,
+                    atom_species=engine.system._species.tolist(),
+                    degrees_of_freedom=engine.dof, units=self._units.description, deform=deform,
+                    potential_shifted=self.pair_potential != 'gravity' and self.lj_shift, pressure_estimator=('not defined for an unconfined cluster' if self.pair_potential == 'gravity' else 'atomic virial' if engine.model == 'atomic' else 'molecular COM virial'),
+                    start_step=start, start_time=engine.time, requested_steps=steps,
+                    thermo_every=thermo_every, trajectory_every=trajectory_every,
+                    live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None)
+        write_json(path/'metadata.json', meta)
+        started = time.monotonic()
+        frame_index = 0
+        last_sample = last_frame = -1
+        status = 'completed'
+        def frame():
+            nonlocal frame_index, last_frame
+            np.savez_compressed(path/'frames'/f'{frame_index:07d}.npz',
+                positions=engine._x, unwrapped=engine._u, velocities=engine._v,
+                box=engine._box, step=engine.step, time=engine.time)
+            frame_index += 1
+            last_frame = engine.step
+        try:
+            if live:
+                live.start(engine)
+            with (path/'thermo.csv').open('w', newline='') as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(engine.observables))
+                writer.writeheader()
+                writer.writerow(engine.observables)
+                last_sample = engine.step
+                if trajectory_every is not None:
+                    frame()
+                while engine.step-start < steps:
+                    elapsed = engine.step-start
+                    chunk = min(steps-elapsed, thermo_every-elapsed%thermo_every, 256)
+                    if trajectory_every is not None:
+                        chunk = min(chunk, trajectory_every-elapsed%trajectory_every)
+                    if live:
+                        chunk = min(chunk, frame_every-elapsed%frame_every)
+                    interrupted = engine._advance(chunk)
+                    elapsed = engine.step-start
+                    final = elapsed == steps or interrupted
+                    if elapsed%thermo_every == 0 or final:
+                        writer.writerow(engine.observables)
+                        stream.flush()
+                        last_sample = engine.step
+                    if trajectory_every is not None and (elapsed%trajectory_every == 0 or final):
+                        frame()
+                    if live and (elapsed%frame_every == 0 or final):
+                        live.update(engine, force=final)
+                    if interrupted:
+                        status = 'interrupted'
+                        break
+        except KeyboardInterrupt:
+            status = 'interrupted'
+        except Exception as exc:
+            status = 'failed'
+            meta['error'] = f'{type(exc).__name__}: {exc}'
+            raise
+        finally:
+            engine._deform = None
+            if live:
+                live.finish(engine, status)
+            if status != 'failed':
+                if last_sample != engine.step:
+                    with (path/'thermo.csv').open('a', newline='') as stream:
+                        csv.DictWriter(stream, fieldnames=list(engine.observables)).writerow(engine.observables)
+                if trajectory_every is not None and last_frame != engine.step:
+                    frame()
+                engine._save_checkpoint(path)
+            meta.update(status=status, completed_steps=engine.step-start, end_step=engine.step,
+                        end_time=engine.time, wall_seconds=time.monotonic()-started)
+            if engine.kind == 'molecular' and self._charge is not None:
+                pppm = engine._pppm_state
+                meta['pppm'] = dict(mesh=[int(n) for n in pppm[:3]], g_ewald=float(pppm[3]), order=5,
+                                    estimated_relative_accuracy=float(pppm[7]), kspace_accuracy=engine.settings['kspace_accuracy'],
+                                    coulomb_cutoff=engine.settings['coulomb_cutoff'])
+            write_json(path/'metadata.json', meta)
+        return Run(path)
+
+    def __repr__(self):
+        return f'MDSimulation(pair_potential={self.pair_potential!r}, units={self.units!r}, settings={self.settings})'
+
+
+def _check_controls(config, sim, kind=None, model=None):
+    """Validate run controls; kind and model are known once a state is given."""
+    if sim.pair_potential == 'gravity' and config['ensemble'] != 'nve':
+        raise ValueError('Isolated gravity uses ensemble="nve" (no thermostat, walls or barostat).')
+    if config['ensemble'] not in ('nve', 'nvt', 'nph', 'npt'):
+        raise ValueError('ensemble must be nve, nvt, nph or npt.')
+    if config['ensemble'] in ('nph', 'npt') and config['pressure'] is None:
+        raise ValueError(f'Set pressure ({sim._units.pressure_unit}) for {config["ensemble"]}.')
+    for key in ('timestep', 'temperature', 'pressure'):
+        if config[key] is not None:
+            config[key] = _positive(config[key], key, zero=(key != 'timestep'))
+    if 'coulomb_cutoff' in config:
+        config['coulomb_cutoff'] = _positive(config['coulomb_cutoff'], 'coulomb_cutoff')
+        config['kspace_accuracy'] = _positive(config['kspace_accuracy'], 'kspace_accuracy')
+        if config['kspace_accuracy'] >= 1:
+            raise ValueError('kspace_accuracy is a relative force accuracy, such as 1e-5.')
+    config['heat_rate'] = float(config['heat_rate'])
+    if not np.isfinite(config['heat_rate']):
+        raise ValueError('heat_rate must be finite (total energy per time).')
+    if config['heat_rate'] and config['ensemble'] in ('nvt', 'npt'):
+        raise ValueError('Turn off the thermostat (nve or nph) before adding/removing heat.')
+    if kind == 'pair' and model != 'atomic' and config['ensemble'] in ('nph', 'npt'):
+        raise ValueError('Pressure control is supported for atoms and rigid water only.')
+    return config
+
+
+class _Engine:
+    """One run's working copy of a state, with the native solver's arrays."""
+
+    def __init__(self, sim, state, settings, seed):
+        self.sim = sim
+        self._units = sim._units
+        system = state.copy()
+        self._system = system
+        if len(system.atoms) > 20000:
+            raise ValueError('This course solver supports at most 20000 atoms.')
+        if system.units != self._units.name:
+            raise ValueError(f'This simulation uses units="{self._units.name}", but the state is in "{system.units}" units.')
+        real = self._units.name == 'real'
+        self.kind = 'molecular' if (system.model == 'water-rigid' or real or sim._charge is not None) else 'pair'
+        if self.kind == 'molecular':
+            if sim.pair_potential != 'lj':
+                raise ValueError('Water, charges and real units use the 12-6 Lennard-Jones potential (pair_potential="lj").')
+            if system.model.startswith('diatomic'):
+                raise ValueError('Diatomic molecules use reduced units without charges.')
+        elif not sim.lj_shift:
+            raise ValueError('lj_shift=False is available for water, charges and real units.')
+        if sim.pair_potential == 'gravity':
+            if system.boundary != 'open' or system.model != 'atomic':
+                raise ValueError('Gravity requires an unbonded System with boundary="open".')
+            if len(system.atoms) > 4096:
+                raise ValueError('Direct all-pairs gravity supports at most 4096 particles.')
+        elif system.boundary != 'periodic':
+            raise ValueError('Lennard–Jones currently requires periodic boundaries.')
+        zero = self.kind == 'molecular'
+        self._epsilon = parameter(sim._epsilon, system.species, 'epsilon', zero=zero)
+        self._sigma = parameter(sim._sigma, system.species, 'sigma', zero=zero)
+        self._charge = None if sim._charge is None else _charges(sim._charge, system.species)
+        self._pair_parameters = np.ascontiguousarray(np.column_stack((per_atom(self._epsilon, system._species), per_atom(self._sigma, system._species))))
+        self._x = system._x
+        self._box = system._box
+        self._mass = system._mass
+        self.cutoff = sim.cutoff
+        self.skin = sim.skin
+        self.friction = sim.friction
+        self.pressure_time = sim.pressure_time
+        if settings['timestep'] is None:
+            settings['timestep'] = .005 if system.model == 'atomic' else .002
+        if self.kind == 'pair':
+            settings.pop('coulomb_cutoff', None)
+            settings.pop('kspace_accuracy', None)
+        self.settings = _check_controls(settings, sim, self.kind, system.model)
+        if self.kind == 'molecular':
+            self._prepare_molecular()
+        self._deform = None
+        if system._v is None:
+            rng = np.random.default_rng(sim.seed if seed is None else seed)
+            self._v = np.ascontiguousarray(rng.normal(size=self._x.shape)/np.sqrt(self._mass[:, None]))
+            self._v -= (self._v*self._mass[:, None]).sum(axis=0)/self._mass.sum()
+            if system.model == 'diatomic-rigid':
+                self._project_velocities()
+            if system.model == 'water-rigid':
+                _core.project_molecular_velocities(self._x, self._v, self._box, self._mass, self._constraints)
+            self._v *= np.sqrt(self.dof*self._units.boltzmann*self.settings['temperature']/(self._units.mvv2e*np.sum(self._mass[:, None]*self._v**2)))
+            system._v = self._v
+        else:
+            self._v = system._v
+            momentum = self._v*self._mass[:, None]
+            if np.linalg.norm(momentum.sum(axis=0)) > 1e-10*max(1., np.linalg.norm(momentum)):
+                raise ValueError('Remove centre-of-mass velocity before starting this solver.')
+        self._u = self._x.copy() if system._u is None else system._u
+        system._u = self._u
+        self._f = np.zeros_like(self._x)
+        self.step = system.step
+        self.time = system.time
+        self.heat_added = system._heat
+        self._rng = seed if seed is not None else (system._rng if system._rng is not None else sim.seed)
+        controlled = self.settings['ensemble'] in ('nph', 'npt')
+        self._rate = system._rate if controlled else 0.
+        self._baromass = (self.dof+3)*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
+        if self.kind == 'molecular':
+            # Barostat inertia from centre-of-mass degrees of freedom (3N-3)+3.
+            self._baromass = 3*self.particles*self._units.boltzmann*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
+        self._advance(0)
+
+    def _prepare_molecular(self):
+        """Type tables, per-atom charges and rigid-water geometry for the native solver."""
+        system = self._system
+        names = system.species
+        index = {name: k for k, name in enumerate(names)}
+        self._types = np.ascontiguousarray([index[s] for s in system._species], dtype=np.intc)
+        value = lambda p, name: p[name] if isinstance(p, dict) else p
+        eps = np.array([value(self._epsilon, n) for n in names])
+        sig = np.array([value(self._sigma, n) for n in names])
+        if np.any((eps > 0) & (sig <= 0)):
+            raise ValueError('sigma must be positive for every species with epsilon > 0.')
+        # Lorentz-Berthelot mixing; species with epsilon=0 have no LJ interactions.
+        self._epsilon_table = np.ascontiguousarray(np.sqrt(np.outer(eps, eps)))
+        self._sigma_table = np.ascontiguousarray(.5*(sig[:, None]+sig[None, :]))
+        q = per_atom(self._charge, system._species) if self._charge is not None else np.zeros(len(system._species))
+        if self._charge is not None and abs(q.sum()) > 1e-8*max(1., np.abs(q).sum()):
+            raise ValueError(f'The total charge must be zero; these charges sum to {q.sum():.6g} e.')
+        self._charges = np.ascontiguousarray(q)
+        self._pppm_state = np.zeros(8)
+        stored = system._pppm
+        if stored is not None and self._charge is not None and stored[1:] == (self.settings['kspace_accuracy'], self.settings['coulomb_cutoff']):
+            # Same electrostatics settings: keep the mesh, so continuing matches one longer run.
+            self._pppm_state[:] = stored[0]
+        water = system.bond if system.model == 'water-rigid' else None
+        self._constraints = water.constraints if water else (1., 1., 1.)
+        self._alpha = water.alpha if water else 0.
+
+    @property
     def system(self):
         return self._system
 
     @property
     def model(self):
-        return self.system.model
+        return self._system.model
 
     @property
     def particles(self):
-        return self.system.N
+        return self._system.N
 
     @property
-    def N(self):
-        return self.system.N
+    def dof(self):
+        return self._system.dof
 
     @property
-    def rho(self):
-        return self.system.rho
+    def atoms(self):
+        return self._system.atoms
+
+    @property
+    def pair_potential(self):
+        return self.sim.pair_potential
+
+    @property
+    def sigma(self):
+        return self.sim.sigma
+
+    @property
+    def units(self):
+        return self._units.name
+
+    @property
+    def forces(self):
+        return _readonly(self._f)
 
     def _bond_vectors(self):
         dr = self._x[::2]-self._x[1::2]
@@ -292,50 +513,31 @@ class MDSimulation:
         r = self._bond_vectors()
         dot = (r*(self._v[::2]-self._v[1::2])).sum(axis=1)
         inv_mass = 1/self._mass[::2] + 1/self._mass[1::2]
-        correction = dot[:,None]*r/((r*r).sum(axis=1)*inv_mass)[:,None]
-        self._v[::2] -= correction/self._mass[::2,None]
-        self._v[1::2] += correction/self._mass[1::2,None]
-
-    @property
-    def dof(self):
-        return self.system.dof
-
-    @property
-    def box(self):
-        return self.system.box
-
-    @property
-    def atoms(self):
-        return self.system.atoms
-
-    @property
-    def forces(self):
-        return _readonly(self._f)
-
-    @property
-    def settings(self):
-        return self._settings.copy()
+        correction = dot[:, None]*r/((r*r).sum(axis=1)*inv_mass)[:, None]
+        self._v[::2] -= correction/self._mass[::2, None]
+        self._v[1::2] += correction/self._mass[1::2, None]
 
     def _advance(self, steps):
-        c = self._settings
-        if self.pair_potential == 'gravity':
+        c = self.settings
+        sim = self.sim
+        if sim.pair_potential == 'gravity':
             self._potential, self._virial, done, interrupted = _core.advance_gravity(
                 self._x, self._v, self._f, self._mass, steps, c['timestep'],
-                self.G, self.softening, c['heat_rate'])
+                sim.G, sim.softening, c['heat_rate'])
             self._u[:] = self._x
             self.step += done
             self.time += done*c['timestep']
             self.heat_added += done*c['timestep']*c['heat_rate']
             self._pressure_numerator = float('nan')
             return bool(interrupted)
-        if self._engine == 'molecular':
+        if self.kind == 'molecular':
             return self._advance_molecular(steps)
         result = _core.advance(self._x, self._v, self._u, self._f, self._box,
             self._mass, steps, c['timestep'], self.cutoff, self.skin,
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
-            int(self.pair_potential == 'lj96'), int(self.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self.system._bond_parameters)
+            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, self._pressure_numerator = result
         self.step += done
         self.time += done*c['timestep']
@@ -343,7 +545,7 @@ class MDSimulation:
         return bool(interrupted)
 
     def _advance_molecular(self, steps):
-        c = self._settings
+        c = self.settings
         U = self._units
         controlled = c['ensemble'] in ('nph', 'npt')
         deform = None
@@ -353,13 +555,13 @@ class MDSimulation:
         result = _core.advance_molecular(x=self._x, v=self._v, u=self._u, f=self._f, box=self._box,
             mass=self._mass, types=self._types, charges=self._charges, epsilon=self._epsilon_table,
             sigma=self._sigma_table, pppm_state=self._pppm_state, deform=deform, steps=steps,
-            timestep=c['timestep'], cutoff=self.cutoff, coulomb_cutoff=c['coulomb_cutoff'], skin=self.skin,
+            timestep=c['timestep'], cutoff=self.cutoff, coulomb_cutoff=c.get('coulomb_cutoff', self.cutoff), skin=self.skin,
             temperature=U.boltzmann*c['temperature'], friction=self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             seed=self._rng, heat_rate=c['heat_rate'], pressure=c['pressure']/U.pressure if controlled else -1.,
             barostat_mass=self._baromass, rate=self._rate, mvv2e=U.mvv2e, qqr2e=U.qqr2e,
             molecule_size=3 if self.model == 'water-rigid' else 1, constraints=self._constraints,
-            alpha=self._alpha, lj_shift=self._lj_shift, coulomb=int(self._charge is not None),
-            accuracy=c['kspace_accuracy'], order=5)
+            alpha=self._alpha, lj_shift=self.sim.lj_shift, coulomb=int(self._charge is not None),
+            accuracy=c.get('kspace_accuracy', 1e-5), order=5)
         self._terms = result
         self._potential = result['lj'] + result['coulomb'] + result['kspace']
         self._virial = result['virial']
@@ -391,8 +593,8 @@ class MDSimulation:
                         virial_ratio=2*K/(-self._virial) if self._virial else float('nan'),
                         half_mass_radius=float(radius[order[half]]), heat_added=self.heat_added,
                         pressure=float('nan'))
-        controlled = self._settings['ensemble'] in ('nph','npt')
-        H = E+self._settings['pressure']/U.pressure*V if controlled else E+P_internal*V
+        controlled = self.settings['ensemble'] in ('nph','npt')
+        H = E+self.settings['pressure']/U.pressure*V if controlled else E+P_internal*V
         B = .5*self._baromass*self._rate**2 if controlled else 0.
         values = dict(step=self.step, time=self.time, temperature=T, pressure=P,
                       kinetic_energy=K, potential_energy=self._potential,
@@ -402,212 +604,40 @@ class MDSimulation:
                       heat_added=self.heat_added)
         if U.name == 'real':
             values['mass_density'] = float(self._mass.sum())/(AVOGADRO_PER_CM3_A3*V)
-        if self._engine == 'molecular' and self._charge is not None:
+        if self.kind == 'molecular' and self._charge is not None:
             values['lj_energy'] = self._terms['lj']
             values['coulomb_energy'] = self._terms['coulomb']+self._terms['kspace']
         return values
 
+    def state(self):
+        """Independent System holding this run's current state and clock."""
+        state = self._system.copy()
+        state._time, state._step = self.time, self.step
+        state._rng = self._rng
+        state._heat = self.heat_added
+        state._rate = self._rate if self.settings['ensemble'] in ('nph', 'npt') else 0.
+        if self.kind == 'molecular' and self._charge is not None:
+            state._pppm = (self._pppm_state.copy(), self.settings['kspace_accuracy'], self.settings['coulomb_cutoff'])
+        return state
+
     def _config(self):
-        return dict(model=self.model, bond=bond_config(self.system.bond), units=self.units,
-                    charge=self.charge, coulomb=self.coulomb, lj_shift=self.lj_shift,
-                    boundary=self.system.boundary, G=self.G, softening=self.softening,
-                    pair_potential=self.pair_potential, epsilon=self.epsilon, sigma=self.sigma, mixing_rule=self.mixing_rule, exclude_bonded_pairs=self.exclude_bonded_pairs, particles=self.particles,
-                    density=self.rho if self.system.boundary == "periodic" else None, seed=self.seed,
+        sim, system = self.sim, self._system
+        return dict(model=self.model, bond=bond_config(system.bond), units=self.units,
+                    charge=sim.charge, coulomb=sim.coulomb, lj_shift=sim.lj_shift,
+                    boundary=system.boundary, G=sim.G, softening=sim.softening,
+                    pair_potential=sim.pair_potential, epsilon=sim.epsilon, sigma=sim.sigma, mixing_rule=sim.mixing_rule,
+                    exclude_bonded_pairs=sim.exclude_bonded_pairs, particles=self.particles,
+                    density=system.rho if system.boundary == "periodic" else None, seed=sim.seed,
                     cutoff=self.cutoff, skin=self.skin, friction=self.friction,
-                    pressure_time=self.pressure_time, storage_name=self.storage_name, **self.settings)
+                    pressure_time=self.pressure_time, storage_name=sim.storage_name, **self.settings)
 
     def _save_checkpoint(self, path):
+        state = self.state()
         with (path/'checkpoint.tmp').open('wb') as stream:
             np.savez_compressed(stream, positions=self._x, velocities=self._v,
-                unwrapped=self._u, masses=self._mass, box=self._box, species=self.system._species,
+                unwrapped=self._u, masses=self._mass, box=self._box, species=self._system._species,
                 rng=np.uint64(self._rng), step=self.step, time=self.time,
-                heat_added=self.heat_added, barostat_rate=self._rate, barostat_mass=self._baromass,
-                **({'pppm_state': self._pppm_state} if self._engine == 'molecular' else {}))
+                heat_added=self.heat_added, barostat_rate=state._rate, barostat_mass=self._baromass,
+                **({'pppm_state': self._pppm_state, 'pppm_settings': np.array([self.settings['kspace_accuracy'], self.settings['coulomb_cutoff']])}
+                   if self.kind == 'molecular' and self._charge is not None else {}))
         (path/'checkpoint.tmp').replace(path/'checkpoint.npz')
-
-    @classmethod
-    def from_run(cls, run, *, output_dir=None):
-        """Explicitly resume the final checkpoint of a completed/interrupted run."""
-        run = run if isinstance(run, Run) else Run.load(run)
-        if run.metadata['status'] not in ('completed', 'interrupted'):
-            raise ValueError('Only completed or interrupted runs can be resumed.')
-        c = run.metadata['configuration'].copy()
-        c['output_dir'] = output_dir or run.path.parent
-        c.pop('particles',None)
-        c.pop('density',None)
-        c.setdefault('pair_potential', 'lj' if c['model'] == 'atomic' else 'lj96')
-        bond_args = {'bond': read_bond(c.pop('bond'))} if 'bond' in c else {}
-        with np.load(run.path/'checkpoint.npz', allow_pickle=False) as data:
-            system=System(data['positions'],data['box'],velocities=data['velocities'],masses=data['masses'],model=c.pop('model'),boundary=c.pop('boundary', 'periodic'),species=data['species'] if 'species' in data else None,units=c.get('units','reduced'),**bond_args)
-            obj=cls(system,**c)
-            for attr, key in (('_x','positions'),('_v','velocities'),('_u','unwrapped'),('_mass','masses'),('_box','box')):
-                getattr(obj,attr)[:] = data[key]
-            obj._f = np.zeros_like(obj._x)
-            obj._rng = int(data['rng'])
-            obj.step = int(data['step'])
-            obj.time = float(data['time'])
-            obj.heat_added = float(data['heat_added'])
-            obj._rate = float(data['barostat_rate'])
-            obj._baromass = float(data['barostat_mass'])
-            if 'pppm_state' in data:
-                obj._pppm_state[:] = data['pppm_state']
-        obj._advance(0)
-        return obj
-
-    @_legacy_output_names
-    def run(self, timestep=None, steps=1000, *, ensemble=None, temperature=None,
-            heat_rate=None, pressure=None, thermo_every=100, trajectory_every=500,
-            show=False, max_fps=None, frame_every=100, storage_name=None,
-            coulomb_cutoff=None, kspace_accuracy=None, deform=None):
-        """Advance and save a run; omitted physical settings retain their values.
-
-        Results go to output_dir/storage_name. Reusing a name replaces the old
-        result, including its trajectory. The constructor's name is the default.
-        Sampling and trajectory intervals are in steps. ``trajectory_every=None``
-        disables trajectory frames, but preserves thermo and a final checkpoint.
-        ``show=True`` gives an interactive live 3D view in a Jupyter notebook.
-        ``max_fps`` optionally paces execution at at most that many displayed
-        frames/second, with ``frame_every`` MD steps/frame. None runs at full
-        speed with display-only throttling. Pacing does not change physical dt.
-
-        For charged systems, coulomb_cutoff and kspace_accuracy may change per run;
-        the PPPM mesh is chosen again at the start of every run, as in LAMMPS.
-        ``deform=s`` (nve/nvt only) scales every box length linearly in time to
-        s times its starting value, moving whole molecules with their centres of
-        mass. An interrupted ramp stops where it is; a new run starts a new ramp.
-        """
-        if self._failed:
-            raise RuntimeError('This simulation failed; create a new one or resume a saved checkpoint.')
-        storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
-        steps = _integer(steps, 'steps', 0)
-        thermo_every = _integer(thermo_every, 'thermo_every')
-        if trajectory_every is not None:
-            trajectory_every = _integer(trajectory_every, 'trajectory_every')
-        frame_every = _integer(frame_every, 'frame_every')
-        if max_fps is not None:
-            max_fps = _positive(max_fps, 'max_fps')
-            if not show:
-                raise ValueError('max_fps is a live-view option; set show=True.')
-        config = self.settings
-        overrides = dict(timestep=timestep, ensemble=ensemble, temperature=temperature,
-                         heat_rate=heat_rate, pressure=pressure)
-        if self._engine == 'molecular':
-            overrides.update(coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy)
-            if self._charge is None and (coulomb_cutoff is not None or kspace_accuracy is not None):
-                raise ValueError('coulomb_cutoff and kspace_accuracy apply only to charged systems.')
-        elif coulomb_cutoff is not None or kspace_accuracy is not None:
-            raise ValueError('coulomb_cutoff and kspace_accuracy apply only to charged systems.')
-        for key, value in overrides.items():
-            if value is not None:
-                config[key] = value
-        self._validate_settings(config)
-        if deform is not None:
-            deform = _positive(deform, 'deform')
-            if self._engine != 'molecular':
-                raise ValueError('deform is available for water, charges and real units.')
-            if config['ensemble'] not in ('nve', 'nvt'):
-                raise ValueError('deform needs ensemble="nve" or "nvt" (no barostat).')
-        live = None
-        if show:
-            from .visualization import LiveView
-            live = LiveView(max_fps=max_fps, frame_every=frame_every)
-        was_controlled = self._settings['ensemble'] in ('nph','npt')
-        self._settings = config
-        if not was_controlled and config['ensemble'] in ('nph','npt'):
-            self._rate = 0.
-        if self._engine == 'molecular':
-            self._pppm_state[0] = 0.  # choose the PPPM mesh again, as LAMMPS does at each run
-        self._advance(0)
-        start = self.step
-        if deform is not None and steps:
-            self._deform = (self._box.copy(), deform, start, steps)
-        path = self.output_dir.resolve()/storage_name
-        _replace_run_directory(path)
-        meta = dict(schema_version=1, package_version='0.1.0', label=storage_name,
-                    storage_name=storage_name,
-                    created_at=datetime.now(timezone.utc).isoformat(), status='running',
-                    configuration={**self._config(), 'storage_name': storage_name}, atoms=len(self._x),
-                    molecules=self.particles if self.model != 'atomic' else 0,
-                    atom_species=self.system._species.tolist(),
-                    degrees_of_freedom=self.dof, units=self._units.description, deform=deform,
-                    potential_shifted=self.pair_potential != 'gravity' and self.lj_shift, pressure_estimator=('not defined for an unconfined cluster' if self.pair_potential == 'gravity' else 'atomic virial' if self.model == 'atomic' else 'molecular COM virial'),
-                    start_step=start, start_time=self.time, requested_steps=steps,
-                    thermo_every=thermo_every, trajectory_every=trajectory_every,
-                    live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None)
-        write_json(path/'metadata.json', meta)
-        started = time.monotonic()
-        frame_index = 0
-        last_sample = last_frame = -1
-        status = 'completed'
-        def frame():
-            nonlocal frame_index, last_frame
-            np.savez_compressed(path/'frames'/f'{frame_index:07d}.npz',
-                positions=self._x, unwrapped=self._u, velocities=self._v,
-                box=self._box, step=self.step, time=self.time)
-            frame_index += 1
-            last_frame = self.step
-        try:
-            if live:
-                live.start(self)
-            with (path/'thermo.csv').open('w', newline='') as stream:
-                writer = csv.DictWriter(stream, fieldnames=list(self.observables))
-                writer.writeheader()
-                writer.writerow(self.observables)
-                last_sample = self.step
-                if trajectory_every is not None:
-                    frame()
-                while self.step-start < steps:
-                    elapsed = self.step-start
-                    chunk = min(steps-elapsed, thermo_every-elapsed%thermo_every, 256)
-                    if trajectory_every is not None:
-                        chunk = min(chunk, trajectory_every-elapsed%trajectory_every)
-                    if live:
-                        chunk = min(chunk, frame_every-elapsed%frame_every)
-                    interrupted = self._advance(chunk)
-                    elapsed = self.step-start
-                    final = elapsed == steps or interrupted
-                    if elapsed%thermo_every == 0 or final:
-                        writer.writerow(self.observables)
-                        stream.flush()
-                        last_sample = self.step
-                    if trajectory_every is not None and (elapsed%trajectory_every == 0 or final):
-                        frame()
-                    if live and (elapsed%frame_every == 0 or final):
-                        live.update(self, force=final)
-                    if interrupted:
-                        status = 'interrupted'
-                        break
-        except KeyboardInterrupt:
-            status = 'interrupted'
-        except Exception as exc:
-            status = 'failed'
-            self._failed = True
-            meta['error'] = f'{type(exc).__name__}: {exc}'
-            raise
-        finally:
-            self._deform = None
-            if live:
-                live.finish(self, status)
-            if status != 'failed':
-                if last_sample != self.step:
-                    with (path/'thermo.csv').open('a', newline='') as stream:
-                        csv.DictWriter(stream, fieldnames=list(self.observables)).writerow(self.observables)
-                if trajectory_every is not None and last_frame != self.step:
-                    frame()
-                self._save_checkpoint(path)
-            meta.update(status=status, completed_steps=self.step-start, end_step=self.step,
-                        end_time=self.time, wall_seconds=time.monotonic()-started)
-            if self._engine == 'molecular' and self._charge is not None:
-                state = self._pppm_state
-                meta['pppm'] = dict(mesh=[int(n) for n in state[:3]], g_ewald=float(state[3]), order=5,
-                                    estimated_relative_accuracy=float(state[7]), kspace_accuracy=self._settings['kspace_accuracy'],
-                                    coulomb_cutoff=self._settings['coulomb_cutoff'])
-            write_json(path/'metadata.json', meta)
-        return Run(path)
-
-    def __repr__(self):
-        return f'MDSimulation(model={self.model!r}, particles={self.particles}, step={self.step}, settings={self.settings})'
-
-
-# Compatibility name for existing notebooks; new examples use MDSimulation.
-Simulation = MDSimulation

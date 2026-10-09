@@ -1,7 +1,7 @@
 # Build a system
 
-Geometry belongs to a `System`. `MDSimulation(system, ...)` copies it and manages
-the experiment; `sim.run(...)` continues that experiment.
+Geometry belongs to a `System`, which is also the state a simulation runs from:
+`sim.run(system, ...)` evolves a copy, and `run.state` is the state it ends in.
 All boxes are periodic in three dimensions. A scalar `box` means a cube side
 length; a triple specifies rectangular side lengths.
 
@@ -16,7 +16,6 @@ rectangular = FCC(N=96, box=(6, 9, 12))
 gas = Random(N=500, rho=.03, min_distance=.9)
 
 sim = MDSimulation(
-    gas,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -26,6 +25,7 @@ sim = MDSimulation(
     cutoff=2.5,
 )
 result = sim.run(
+    gas,
     steps=5000,
     thermo_every=100,
     trajectory_every=500,
@@ -70,7 +70,6 @@ from fys2160_md import System
 pair = System([[4, 5, 5], [5.15, 5, 5]], box=10,
               velocities=[[.1, 0, 0], [-.1, 0, 0]])
 sim = MDSimulation(
-    pair,
     pair_potential="lj",
     epsilon=1,
     sigma=1,
@@ -79,6 +78,7 @@ sim = MDSimulation(
     timestep=0.005,
     cutoff=2.5,
 )
+result = sim.run(pair, steps=1000, thermo_every=10, trajectory_every=100, storage_name="pair")
 ```
 
 Inputs are copied. Explicit velocities must have zero total momentum. Diatomic
