@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include "molecular.h"
 
 typedef struct { int i, j; } Pair;
 typedef struct { Pair *pairs; size_t size, capacity; double *reference; double box[3]; } Neighbors;
@@ -479,6 +480,10 @@ cleanup:
 static PyMethodDef methods[] = {
     {"advance_gravity", advance_gravity, METH_VARARGS, "Advance isolated softened gravity in-place."},
     {"advance", advance, METH_VARARGS, "Advance LJ dynamics in-place; return energy, virial, RNG, steps, interrupt flag, barostat rate and pressure numerator."},
+    {"advance_molecular", (PyCFunction)(void(*)(void))advance_molecular, METH_VARARGS|METH_KEYWORDS, "Advance charged atoms or rigid water in-place; return a dict of energies and state."},
+    {"project_molecular_velocities", project_molecular_velocities, METH_VARARGS, "Remove velocity components along rigid-water constraints in-place."},
+    {"pppm_parameters", pppm_parameters, METH_VARARGS, "Choose PPPM mesh and Ewald parameter from a relative accuracy."},
+    {"fft_transform", fft_transform, METH_VARARGS, "In-place unnormalized 3D FFT of a complex128 array (test helper)."},
     {NULL,NULL,0,NULL}
 };
 static struct PyModuleDef module = {PyModuleDef_HEAD_INIT,"_core",NULL,-1,methods};

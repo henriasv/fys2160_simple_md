@@ -2,9 +2,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
-from .bonds import resolve_model, bonds_for_species, coefficients
+from .bonds import resolve_model, bonds_for_species, coefficients, RigidWater
+from .units import units as _units
 
-MODELS = {'atomic': 0, 'diatomic-flexible': 1, 'diatomic-rigid': 2}
+MODELS = {'atomic': 0, 'diatomic-flexible': 1, 'diatomic-rigid': 2, 'water-rigid': 3}
+_SIZE = {'atomic': 1, 'diatomic-flexible': 2, 'diatomic-rigid': 2, 'water-rigid': 3}
 
 
 def _positive(value, name, *, zero=False):
@@ -56,10 +58,11 @@ class System:
     its own copy. All public array accessors return read-only snapshots.
     """
 
-    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic"):
+    def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
         if boundary not in ("periodic", "open"):
             raise ValueError("boundary must be periodic or open.")
         self._boundary = boundary
+        self._units = _units(units).name
         model, bond = resolve_model(model, molecule, bond)
         if boundary == "open" and model != "atomic":
             raise ValueError("Open boundaries currently support unbonded particles only.")
@@ -72,8 +75,10 @@ class System:
             raise ValueError('box lengths must be finite and positive.')
         if model not in MODELS:
             raise ValueError(f'model must be one of {tuple(MODELS)}')
-        if model!='atomic' and len(x)%2:
+        if model.startswith('diatomic') and len(x)%2:
             raise ValueError('Diatomic models require an even number of atoms.')
+        if model=='water-rigid' and len(x)%3:
+            raise ValueError('Water requires O, H, H atom triplets.')
         labels = np.asarray('A' if species is None else species)
         if labels.ndim == 0: labels = np.repeat(labels, len(x))
         if labels.shape != (len(x),) or labels.dtype.kind not in 'US':
@@ -83,12 +88,14 @@ class System:
         self._species = labels.astype(str, copy=True)
         if isinstance(bond,dict) and np.any(self._species[::2] != self._species[1::2]):
             raise ValueError('Per-species bonds require homonuclear pairs; use a shared bond for heteronuclear molecules.')
-        self._bond_specs = () if model == 'atomic' else bonds_for_species(bond, self._species[::2])
+        if model=='water-rigid' and (np.any(self._species[1::3] != self._species[2::3]) or np.any(self._species[0::3] == self._species[1::3])):
+            raise ValueError('Each water molecule must list O first, then two H atoms of one other species.')
+        self._bond_specs = () if model in ('atomic', 'water-rigid') else bonds_for_species(bond, self._species[::2])
         self._bond_parameters = np.array([coefficients(b) for b in self._bond_specs],dtype=float).reshape(-1,4)
         if len(self._bond_parameters) and np.any(self._bond_parameters[:,0]>=min(lengths)/2):
             raise ValueError('Bond length must be less than half the shortest box side.')
         self._model=model
-        self._N=_integer(len(x) if model=='atomic' else len(x)//2,'N',2)
+        self._N=_integer(len(x)//_SIZE[model],'N',2)
         self._box=lengths
         self._x=np.ascontiguousarray(x%lengths if boundary == "periodic" else x)
         self._mass=np.ones(len(x)) if masses is None else np.array(masses,dtype=float,order='C',copy=True)
@@ -105,11 +112,26 @@ class System:
                 raise ValueError('Rigid bonds must have their specified lengths.')
             if self._v is not None and np.max(np.abs((bond*(self._v[::2]-self._v[1::2])).sum(axis=1)))>1e-10:
                 raise ValueError('Rigid bond relative velocities must be perpendicular to the bonds.')
+        if model=='water-rigid':
+            for (a, b), length in zip(((0, 1), (0, 2), (1, 2)), self._bond.constraints):
+                if length >= min(lengths)/2:
+                    raise ValueError('Water must be smaller than half the shortest box side.')
+                dr=self._x[a::3]-self._x[b::3]
+                dr-=lengths*np.rint(dr/lengths)
+                if not np.allclose(np.linalg.norm(dr,axis=1),length,atol=1e-9,rtol=0):
+                    raise ValueError('Water molecules must have the RigidWater O-H lengths and H-O-H angle.')
+                if self._v is not None and np.max(np.abs((dr*(self._v[a::3]-self._v[b::3])).sum(axis=1)))>1e-9:
+                    raise ValueError('Rigid-water relative velocities must be perpendicular to the constrained distances.')
 
     @property
     def boundary(self):
         """Open systems use box only as a viewing frame, without walls or images."""
         return self._boundary
+
+    @property
+    def units(self):
+        """Unit system: "reduced" Lennard-Jones units or LAMMPS "real" units."""
+        return self._units
 
     @property
     def species(self):
@@ -121,12 +143,16 @@ class System:
 
     @property
     def molecule(self):
-        return None if self.model == 'atomic' else 'diatomic'
+        return {'atomic': None, 'water-rigid': 'water'}.get(self.model, 'diatomic')
 
     @property
     def bonds(self):
         """Connected atom-index pairs (zero-based); empty for an atomic system."""
-        pairs = np.empty((0, 2), dtype=int) if self.bond is None else np.arange(2*self.N).reshape(-1, 2)
+        if self.model == 'water-rigid':
+            o = 3*np.arange(self.N)
+            pairs = np.stack((np.stack((o, o+1), axis=1), np.stack((o, o+2), axis=1)), axis=1).reshape(-1, 2)
+        else:
+            pairs = np.empty((0, 2), dtype=int) if self.bond is None else np.arange(2*self.N).reshape(-1, 2)
         return _readonly(pairs)
 
     @property
@@ -147,20 +173,20 @@ class System:
 
     @property
     def atoms(self):
-        ids=np.arange(len(self._x))//(1 if self.model=='atomic' else 2)
+        ids=np.arange(len(self._x))//_SIZE[self.model]
         return Atoms(_readonly(self._x),_readonly(self._v),_readonly(self._mass),_readonly(ids),_readonly(self._species))
 
     @property
     def dof(self):
-        return 3*len(self._x)-3-(self.N if self.model=='diatomic-rigid' else 0)
+        return 3*len(self._x)-3-{'diatomic-rigid': self.N, 'water-rigid': 3*self.N}.get(self.model, 0)
 
     def copy(self):
         """Independent copy of geometry and any supplied velocities."""
-        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary)
+        return System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units)
 
     @classmethod
-    def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic"):
-        return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary)
+    def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
+        return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary,units=units)
 
     def __repr__(self):
         return f'System(model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None})'

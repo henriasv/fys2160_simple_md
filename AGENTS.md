@@ -4,7 +4,11 @@ This repository contains the standalone course MD package. Python import:
 `fys2160_md`; distribution: `fys2160-simple-md`.
 
 - Geometry/state: `src/fys2160_md/{geometry,system}.py`.
-- Runner: `sim = MDSimulation(system, ...)`, then `sim.run(...)`; native solver: `_core.c`.
+- Runner: `sim = MDSimulation(system, ...)`, then `sim.run(...)`; native solver: `_core.c`
+  (LJ/diatomic/gravity, keep byte-identical) and `molecular.c` + `pppm.c` + `fft.c`
+  (charged atoms and rigid water, LAMMPS `real` units).
+- `tests/test_golden.py` freezes short trajectories of the old solvers; regenerate
+  only for an intentional physics change.
 - Shared live/saved WebGL renderer: `viewer.js`.
 - Docs: `docs/`, `mkdocs.yml`; static executed notebook built by
   `scripts/build_docs.py`. GitHub Actions publishes Pages on main.
@@ -87,3 +91,25 @@ is a dynamical illustration, not a precision equilibrium heat-capacity curve.
 open checkpoint and native-buffer safety. Static build now executes three
 notebooks. Gravity playback omits box edges; particle_radius controls display
 markers only (default 0.035). Existing LJ view radii/default cutoff remain as before.
+
+2026-10-09 (branch water-pppm): rigid water and PPPM for Lab 2. molecule="water"
+with RigidWater(oh_length, hoh_angle, m_distance) gives SPC/E (m_distance=0) or
+TIP4P-type models (O charge on the M site, as LAMMPS lj/cut/tip4p/long). Systems
+carry units ("reduced" default, "real" = LAMMPS real); real units require explicit
+temperature, timestep, cutoff (and pressure for npt). charge + coulomb="pppm"
+select PPPM written from Hockney-Eastwood/Deserno-Holm, matching LAMMPS pppm
+(ik, order 5, same mesh/g selection; energies agree to ~1e-12 with LAMMPS at the
+same mesh, forces ~2e-6). The mesh is re-chosen at each run and when the box
+changes >5%; state persists in checkpoints so trajectories are bitwise
+independent of thermo_every. Molecular MTK barostat (COM scaling), run(deform=s)
+with COM remap (nve/nvt), IceIh(N=8nx ny nz) with ice rules and zero dipole,
+Random(molecule="water"), lj_shift option, viewer bonds/element colours/real-unit
+labels. Own radix-2/3/5 FFT instead of a vendored library. LAMMPS is a behavioural
+reference only (GPL; nothing copied). Homebrew LAMMPS segfaults in PPPM; cross-checks
+used a serial build from hsp_hymcp/lammps. 768 SPC/E waters: 11 ms/step on one core
+(LAMMPS serial 9 ms). Perfect 768-molecule ice superheats ~25 ps at 310 K in both
+codes, so the private Lab 2 notebook (fys2160-groupsession-materials/labs/lab2)
+melts at 350 K; expansion/vapour use kspace_accuracy=1e-4. examples/water.ipynb is
+an independent liquid-structure demo (SPC/E vs TIP4P/2005 density and g_OO).
+61 Python tests and viewer controls pass.
+

@@ -23,12 +23,26 @@ def species_counts(N, species):
     return total, np.array([name for name, count in counts.items() for _ in range(count)])
 
 
-def parameter(value, names, name):
+def parameter(value, names, name, *, zero=False):
     if isinstance(value, Mapping):
         if set(value) != set(names):
             raise ValueError(f'{name} must specify exactly these species: {list(names)}.')
-        return {s: _positive(value[s], name) for s in names}
-    return _positive(value, name)
+        return {s: _positive(value[s], name, zero=zero) for s in names}
+    return _positive(value, name, zero=zero)
+
+
+def charges(value, names):
+    """Per-species charges (any finite value); a scalar applies to every species."""
+    def finite(q):
+        q = float(q)
+        if not np.isfinite(q):
+            raise ValueError('charge must be finite.')
+        return q
+    if isinstance(value, Mapping):
+        if set(value) != set(names):
+            raise ValueError(f'charge must specify exactly these species: {list(names)}.')
+        return {s: finite(value[s]) for s in names}
+    return finite(value)
 
 
 def per_atom(value, labels):

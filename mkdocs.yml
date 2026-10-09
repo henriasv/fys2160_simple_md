@@ -22,11 +22,13 @@ nav:
   - Overview: index.md
   - Installation: installation.md
   - Build a system: geometry.md
+  - Water and electrostatics: water.md
 - Examples:
   - Recipes: examples/index.md
   - Executed notebook: examples/notebook.md
   - NPT temperature sweep: examples/isobar.md
   - Gravity & negative heat capacity: examples/gravity.md
+  - Liquid water models: examples/water.md
 - API reference:
   - System & geometry: api/system.md
   - MDSimulation: api/simulation.md

@@ -2,7 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-let images = [], disconnected = false, edgeCount=0;
+let images = [], disconnected = false, edgeCount=0, bondCount=0, kinds=[];
 const canvas = {
   width:720,height:600,setAttribute(){},setPointerCapture(){},
   getBoundingClientRect(){return {width:720,height:600};},
@@ -24,7 +24,7 @@ vm.runInContext(fs.readFileSync(__dirname+'/../src/fys2160_md/viewer.js','utf8')
 // Test camera/geometry independently of GPU rasterization; the browser harness
 // checks real sphere-surface pixels and draw-order independence.
 sandbox.createMDSphereRenderer=()=>({draw(scene){
-  edgeCount=scene.edges.length;
+  edgeCount=scene.edges.length;bondCount=scene.bonds.length/2;kinds=scene.kinds;
   images=Array.from(scene.positions,(p,i)=>{
     const factor=scene.perspective?2.5/(2.5-p[2]):1;
     return [360+scene.pan[0]+300*scene.zoom*factor*p[0],
@@ -80,4 +80,15 @@ assert.equal(edgeCount,0);
 assert.ok(!controls.get('output').textContent.includes('P*'));
 assert.ok(controls.get('output').textContent.includes('T* 2.000'));
 isolated.dispose();
-console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, sizing and cleanup.');
+// Water: explicit O-H bonds (not consecutive pairs), element colours and real-unit labels.
+const waterFrame={box:[10,10,10],x:[[5,5,5],[5.8,5.6,5],[4.2,5.6,5]],step:3,time:1500,temperature:300.04,pressure:1.25};
+const water=sandbox.createMDView(host,{frames:[waterFrame],species:['O','H','H'],bonds:[[0,1],[0,2]],sigma:{O:1.3,H:.7},
+  units:{time:'ps',time_scale:.001,temperature:'K',pressure:'atm'},molecular:true,projection:'orthographic',zoom:1,live:true,note:''});
+assert.equal(bondCount,2);assert.deepEqual(Array.from(kinds),[4,6,6]);
+assert.ok(controls.get('[data-note]').textContent.includes('O (red)'));
+assert.ok(controls.get('[data-note]').textContent.includes('H (white)'));
+assert.ok(controls.get('output').textContent.includes('t 1.50 ps'));
+assert.ok(controls.get('output').textContent.includes('T 300.0 K'));
+assert.ok(controls.get('output').textContent.includes('P 1.250 atm'));
+water.dispose();
+console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, sizing, water display and cleanup.');

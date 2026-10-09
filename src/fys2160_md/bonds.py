@@ -1,4 +1,4 @@
-"""Explicit intramolecular bonds; lengths and energies are in reduced units."""
+"""Explicit intramolecular bonds and rigid water geometry, in the system's units."""
 from dataclasses import dataclass, asdict
 import math
 from collections.abc import Mapping
@@ -47,6 +47,43 @@ class Class2Bond:
         object.__setattr__(self, 'k3', float(self.k3))
 
 
+@dataclass(frozen=True)
+class RigidWater:
+    """Rigid water: two O-H distances and the H-O-H angle (degrees) are fixed.
+
+    m_distance=0 gives a three-site model such as SPC/E. m_distance>0 gives a
+    TIP4P-type model: as in LAMMPS lj/cut/tip4p/long, the O charge sits on a
+    massless M site this far from O along the H-O-H bisector.
+    """
+    oh_length: float = 1.0
+    hoh_angle: float = 109.47
+    m_distance: float = 0.0
+
+    def __post_init__(self):
+        object.__setattr__(self, 'oh_length', _positive(self.oh_length, 'oh_length'))
+        angle = float(self.hoh_angle)
+        if not math.isfinite(angle) or not 0 < angle < 180:
+            raise ValueError('hoh_angle must be between 0 and 180 degrees.')
+        object.__setattr__(self, 'hoh_angle', angle)
+        distance = float(self.m_distance)
+        if not math.isfinite(distance) or distance < 0 or distance >= self.oh_length*math.cos(math.radians(angle/2)):
+            raise ValueError('m_distance must be nonnegative and lie between O and the H-H midpoint.')
+        object.__setattr__(self, 'm_distance', distance)
+
+    @property
+    def hh_length(self):
+        return 2*self.oh_length*math.sin(math.radians(self.hoh_angle/2))
+
+    @property
+    def alpha(self):
+        """Weight of each H in the M position: r_M = r_O + alpha*(r_H1 - r_O + r_H2 - r_O)."""
+        return self.m_distance/(2*self.oh_length*math.cos(math.radians(self.hoh_angle/2)))
+
+    @property
+    def constraints(self):
+        return (self.oh_length, self.oh_length, self.hh_length)
+
+
 def resolve_model(model=None, molecule=None, bond=None):
     if model is not None and molecule is not None:
         raise ValueError('Specify molecule and bond, or the legacy model, not both.')
@@ -59,19 +96,27 @@ def resolve_model(model=None, molecule=None, bond=None):
         rigid = [isinstance(b, RigidBond) for b in bond.values()]
         if any(rigid) and not all(rigid):
             raise ValueError('Use either rigid bonds for all species or flexible bonds for all species.')
-    if bond is not None and not isinstance(bond, (HarmonicBond, RigidBond, Class2Bond, dict)):
-        raise TypeError('bond must be HarmonicBond, RigidBond or Class2Bond.')
+    if bond is not None and not isinstance(bond, (HarmonicBond, RigidBond, Class2Bond, RigidWater, dict)):
+        raise TypeError('bond must be HarmonicBond, RigidBond, Class2Bond or RigidWater.')
     if model is not None:
-        if model not in ('atomic', 'diatomic-flexible', 'diatomic-rigid'):
+        if model not in ('atomic', 'diatomic-flexible', 'diatomic-rigid', 'water-rigid'):
             raise ValueError('Unknown model.')
         if bond is None:
-            bond = {'atomic': None, 'diatomic-flexible': Class2Bond(), 'diatomic-rigid': RigidBond()}[model]
-        expected = 'atomic' if bond is None else ('diatomic-rigid' if is_rigid(bond) else 'diatomic-flexible')
+            bond = {'atomic': None, 'diatomic-flexible': Class2Bond(), 'diatomic-rigid': RigidBond(), 'water-rigid': RigidWater()}[model]
+        expected = ('atomic' if bond is None else 'water-rigid' if isinstance(bond, RigidWater)
+                    else 'diatomic-rigid' if is_rigid(bond) else 'diatomic-flexible')
         if model != expected:
             raise ValueError('model and bond disagree.')
         return model, bond
-    if molecule not in (None, 'diatomic'):
-        raise ValueError('molecule must be None (atoms) or "diatomic".')
+    if molecule not in (None, 'diatomic', 'water'):
+        raise ValueError('molecule must be None (atoms), "diatomic" or "water".')
+    if molecule == 'water':
+        bond = RigidWater() if bond is None else bond
+        if not isinstance(bond, RigidWater):
+            raise TypeError('molecule="water" takes bond=RigidWater(...).')
+        return 'water-rigid', bond
+    if isinstance(bond, RigidWater):
+        raise ValueError('RigidWater requires molecule="water".')
     if molecule is None:
         if bond is not None:
             raise ValueError('Set molecule="diatomic" when specifying a bond.')
@@ -93,7 +138,7 @@ def read_bond(config):
     kind = args.pop('kind')
     if kind == 'per-species':
         return {name: read_bond(b) for name,b in args['bonds'].items()}
-    return {'HarmonicBond': HarmonicBond, 'RigidBond': RigidBond, 'Class2Bond': Class2Bond}[kind](**args)
+    return {'HarmonicBond': HarmonicBond, 'RigidBond': RigidBond, 'Class2Bond': Class2Bond, 'RigidWater': RigidWater}[kind](**args)
 
 
 def is_rigid(bond):

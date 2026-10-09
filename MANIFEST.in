@@ -1,0 +1,2 @@
+include src/fys2160_md/*.h
+include src/fys2160_md/*.c

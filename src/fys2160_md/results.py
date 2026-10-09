@@ -32,7 +32,7 @@ class Run:
 
     @property
     def thermo(self) -> pd.DataFrame:
-        """Recorded observables. Energies are totals, time is reduced MD time."""
+        """Recorded observables for the whole system, in the run's units (see metadata['units'])."""
         return pd.read_csv(self.path / 'thermo.csv')
 
     def iter_frames(self):
@@ -63,8 +63,10 @@ class Run:
         fig.tight_layout()
         return fig
 
-    def view(self, *, max_frames=150, max_atoms=1500, projection='orthographic', zoom=1.0, particle_radius=None):
-        """Return a self-contained notebook trajectory player with drag-to-rotate."""
+    def view(self, *, max_frames=150, max_atoms=3000, projection='orthographic', zoom=1.0, particle_radius=None):
+        """Return a self-contained notebook trajectory player with drag-to-rotate.
+
+        particle_radius sets display sizes only: one value, or one per species."""
         from .visualization import trajectory_player
         return trajectory_player(self, max_frames=max_frames, max_atoms=max_atoms, projection=projection, zoom=zoom, particle_radius=particle_radius)
 

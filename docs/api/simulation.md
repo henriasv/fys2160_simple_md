@@ -31,7 +31,7 @@ MDSimulation(system, *, pair_potential="lj", epsilon=1., sigma=1.,
 | `mixing_rule` | `"lorentz-berthelot"`: arithmetic sigma and geometric epsilon; the currently supported rule |
 | `exclude_bonded_pairs` | True by default: connected atom pairs feel the bond only |
 | `temperature` | Initial temperature for missing velocities and thermostat target |
-| `ensemble` | `nve`, `nvt`, or atomic-only `nph` / `npt` |
+| `ensemble` | `nve`, `nvt`, or `nph` / `npt` for atoms and rigid water |
 | `timestep` | Defaults to 0.005 for atoms, 0.002 for molecules |
 | `cutoff`, `skin` | LJ cutoff defaults to 2.5 when None; neighbor-list skin defaults to 0.4. Gravity requires cutoff=None and uses no neighbor list |
 | `G`, `softening` | Gravity coupling (default 1) and smoothing length (default 0.05); softening=0 gives exact inverse-square gravity |
@@ -41,6 +41,15 @@ MDSimulation(system, *, pair_potential="lj", epsilon=1., sigma=1.,
 | `seed` | Initial velocity / thermostat seed, integer from 1 through 2⁶⁴−1 |
 | `output_dir` | Parent folder for saved runs |
 | `storage_name` | Default run folder name; reuse replaces its previous contents |
+| `units` | Optional check that the system's units are as expected: `"reduced"` or `"real"` |
+| `charge` | Per-species charges in e; the total must be zero. Requires `coulomb="pppm"` |
+| `coulomb` | `"pppm"`: long-range electrostatics by particle-particle particle-mesh Ewald summation |
+| `coulomb_cutoff` | Real-space Ewald cutoff; defaults to `cutoff` |
+| `kspace_accuracy` | Relative PPPM force accuracy, default 1e-5 |
+| `lj_shift` | True subtracts the Lennard-Jones energy at the cutoff; False is the plain truncated potential (water, charges and real units only) |
+
+In real units (water), `temperature` (K), `timestep` (fs) and `cutoff` (Å) must be
+given, and `pressure` (atm) for npt/nph. See [Water and electrostatics](../water.md).
 
 Explicit velocities in the System are preserved. A geometry seed controls
 placement and orientation; an MDSimulation seed controls velocities and stochastic
@@ -70,7 +79,9 @@ sim.run(timestep=None, steps=1000, *,
 | `timestep` | Positive reduced timestep; None retains the current value |
 | `ensemble` | `nve`, `nvt`, `nph`, `npt`; None retains the current value |
 | `temperature` | New thermostat target; does not instantly reset velocities |
-| `pressure` | Pressure-control target, atomic NPH/NPT only |
+| `pressure` | Pressure-control target for NPH/NPT |
+| `coulomb_cutoff`, `kspace_accuracy` | Change the electrostatics settings of a charged system for this and later runs |
+| `deform` | nve/nvt only: scale every box length linearly to this factor by the end of the run, moving whole molecules |
 | `heat_rate` | Total energy per reduced time; positive adds energy, negative removes energy |
 | `thermo_every` | Record thermodynamic quantities at this interval, in steps |
 | `trajectory_every` | Save particle frames at this interval; None disables frames |

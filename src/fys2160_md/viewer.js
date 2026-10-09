@@ -8,8 +8,11 @@ root.style.cssText='display:block;box-sizing:border-box;width:720px;max-width:10
 el.replaceChildren(root);
 root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:#f4f7fa;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
 const speciesNames=[...new Set(data.species||[])];
-const speciesColors=['blue','orange','green','purple','red','grey'];
-root.querySelector('[data-note]').textContent=data.note+(speciesNames.length>1?' Species: '+speciesNames.map((name,i)=>name+' ('+speciesColors[i%6]+')').join(', ')+'.':'');
+const speciesColors=['blue','orange','green','purple','red','grey','white'];
+// Conventional element colours for water; other species use the palette in order.
+const elementKinds={O:4,H:6};
+const kindOf=name=>name in elementKinds?elementKinds[name]:speciesNames.indexOf(name)%6;
+root.querySelector('[data-note]').textContent=data.note+(speciesNames.length>1?' Species: '+speciesNames.map(name=>name+' ('+speciesColors[kindOf(name)]+')').join(', ')+'.':'');
 let state=data.live?'Running':'',pendingDraw=0;
 const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('button'),slider=root.querySelector('input'),label=root.querySelector('output');
 const projection=root.querySelector('select');projection.value=data.projection;
@@ -48,16 +51,19 @@ const f=frames[+slider.value],edges=[],bonds=[];
 const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f.box)));
 for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b&&data.boundary!=="open")edges.push(corners[a],corners[b]);}
 const positions=f.x.map(p=>cameraPosition(normalize(p,f.box)));
-if(data.molecular)for(let i=0;i+1<positions.length;i+=2){
-  if(f.x[i].every((v,d)=>Math.abs(v-f.x[i+1][d])<.5*f.box[d]))bonds.push(positions[i],positions[i+1]);
+const pairs=data.bonds||(data.molecular?Array.from({length:Math.floor(positions.length/2)},(_,k)=>[2*k,2*k+1]):[]);
+for(const [i,j] of pairs){
+  if(j<positions.length&&f.x[i].every((v,d)=>Math.abs(v-f.x[j][d])<.5*f.box[d]))bonds.push(positions[i],positions[j]);
 }
 renderer.draw({positions,edges,bonds,radius:.5*(typeof data.sigma==='number'?data.sigma:1)/extent,
 radii:positions.map((_,i)=>.5*(typeof data.sigma==='object'?data.sigma[data.species[i]]:(data.sigma??1))/extent),
-kinds:positions.map((_,i)=>speciesNames.length>0?speciesNames.indexOf(data.species[i]):(data.molecular?i%2:0)),zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
+kinds:positions.map((_,i)=>speciesNames.length>0?kindOf(data.species[i]):(data.molecular?i%2:0)),zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
 updateLabel(f);}
 function updateLabel(f){
-  label.textContent=(state?state+' · ':'')+'Step '+f.step+' · t* '+f.time.toFixed(2)
-    +(data.live?' · T* '+f.temperature.toFixed(3)+(Number.isFinite(f.pressure)?' · P* '+f.pressure.toPrecision(4):''):'');
+  const u=data.units;
+  label.textContent=(state?state+' · ':'')+'Step '+f.step+(u?' · t '+(f.time*u.time_scale).toFixed(2)+' '+u.time:' · t* '+f.time.toFixed(2))
+    +(data.live?(u?' · T '+f.temperature.toFixed(1)+' '+u.temperature:' · T* '+f.temperature.toFixed(3))
+      +(Number.isFinite(f.pressure)?(u?' · P '+f.pressure.toPrecision(4)+' '+u.pressure:' · P* '+f.pressure.toPrecision(4)):''):'');
 }
 function stop(){clearInterval(timer);timer=null;button.textContent='Play';}
 button.onclick=()=>{if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);};
@@ -186,8 +192,8 @@ void main(){
   vec3 halfDirection=normalize(light-direction);
   float diffuse=max(dot(normal,light),0.);
   float specular=pow(max(dot(normal,halfDirection),0.),40.);
-  float kind=mod(v_kind,6.);
-  vec3 base=kind<.5?vec3(.16,.57,.72):kind<1.5?vec3(.84,.48,.19):kind<2.5?vec3(.25,.65,.4):kind<3.5?vec3(.6,.4,.75):kind<4.5?vec3(.8,.3,.35):vec3(.5,.55,.6);
+  float kind=mod(v_kind,7.);
+  vec3 base=kind<.5?vec3(.16,.57,.72):kind<1.5?vec3(.84,.48,.19):kind<2.5?vec3(.25,.65,.4):kind<3.5?vec3(.6,.4,.75):kind<4.5?vec3(.8,.3,.35):kind<5.5?vec3(.5,.55,.6):vec3(.9,.91,.92);
   color=vec4(base*(.26+.74*diffuse)+vec3(.65)*specular,1.);
 }`);
   const lines=program(`#version 300 es

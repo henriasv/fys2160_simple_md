@@ -1,7 +1,8 @@
 # Physics & validation
 
-All quantities use LJ reduced units with reference mass, sigma_ref, epsilon_ref
-and kB set to one. Species parameters are relative to these fixed references. **All energies in `thermo.csv` are totals**, unlike LAMMPS's default
+Lennard-Jones, diatomic and gravity systems use LJ reduced units with reference
+mass, sigma_ref, epsilon_ref and kB set to one. Water and charged systems use
+LAMMPS `real` units; see [Water and electrostatics](water.md). Species parameters are relative to these fixed references. **All energies in `thermo.csv` are totals**, unlike LAMMPS's default
 per-atom thermodynamic energies in LJ units. Divide by `system.N` to get energy
 per atom or per molecule. For periodic systems, `atom_density` is also recorded to expose that distinction. Gravity uses the same fixed reference units with an explicitly chosen G; it does not use an LJ potential.
 

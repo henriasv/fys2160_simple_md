@@ -46,12 +46,12 @@ def export(nb):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--execute",action="store_true");args=parser.parse_args()
-    for name in ("quickstart", "isobar", "gravity"):
+    for name in ("quickstart", "isobar", "gravity", "water"):
         path=ROOT/"examples"/(name+".ipynb");nb=nbformat.read(path,as_version=4)
         if args.execute:
             import matplotlib.font_manager  # Build font cache before recording cells.
             with tempfile.TemporaryDirectory(prefix="fys2160-docs-") as work:
-                NotebookClient(nb,timeout=180,kernel_name="python3",resources={"metadata":{"path":work}}).execute()
+                NotebookClient(nb,timeout=600,kernel_name="python3",resources={"metadata":{"path":work}}).execute()
             nbformat.write(nb,path)
         if not any(c.get("outputs") for c in nb.cells):
             raise RuntimeError(f"Run with --execute first to create {name}'s recorded outputs.")

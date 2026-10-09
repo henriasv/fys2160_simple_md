@@ -42,10 +42,13 @@ result.view()  # Interactive replay in a notebook.
 `Random(N=500, box=20, min_distance=.9)` gives self-avoiding random positions.
 Use `show=True, max_fps=20` on a run for live notebook visualization.
 Saved trajectories remain replayable after restarting Python. Reusing a
-`storage_name` overwrites that result. All quantities use reduced LJ units.
+`storage_name` overwrites that result. LJ systems use reduced units; water uses
+LAMMPS `real` units (Å, fs, kcal/mol, K, atm).
 
-The engine supports atomic LJ, flexible and rigid diatomics, NVE/NVT and atomic
-NPH/NPT, plus controlled heating. It has no LAMMPS or Atomify runtime dependency.
+The engine supports atomic LJ, flexible and rigid diatomics, rigid SPC/E and
+TIP4P-type water with PPPM long-range electrostatics, NVE/NVT and NPH/NPT for
+atoms and water, box expansion, plus controlled heating. It has no LAMMPS or
+Atomify runtime dependency. See [Water and electrostatics](https://henriasv.github.io/fys2160_simple_md/water/).
 See the [model details](https://henriasv.github.io/fys2160_simple_md/physics/) for
 assumptions, limits and validation. This is a teaching tool, not a general MD engine.
 

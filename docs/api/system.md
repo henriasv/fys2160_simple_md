@@ -63,11 +63,12 @@ sets the thermostat target, not an immediate velocity reset.
 |---|---|
 | `system.species` | Tuple of distinct species names |
 | `system.atoms.species` | Read-only per-atom species labels |
-| `system.molecule` | None for atoms, `"diatomic"` for molecules |
+| `system.molecule` | None for atoms, `"diatomic"` or `"water"` for molecules |
 | `system.bond` | Immutable bond settings, or None |
 | `system.bonds` | Read-only (number of bonds, 2) array of connected atom indices |
-| `system.model` | Legacy label (`atomic`, `diatomic-flexible`, `diatomic-rigid`) |
-| `system.N` | Number of atoms, or molecules for diatomics |
+| `system.model` | Label: `atomic`, `diatomic-flexible`, `diatomic-rigid` or `water-rigid` |
+| `system.units` | `"reduced"` (default) or `"real"` (LAMMPS real units; water) |
+| `system.N` | Number of atoms, or molecules for diatomics and water |
 | `system.boundary` | `"periodic"` or `"open"` |
 | `system.rho` | Current N / volume for periodic systems; NaN for an unconfined cluster |
 | `system.box.lengths`, `.volume` | Box lengths and volume |
@@ -125,6 +126,21 @@ the mapping; editing it does not change the system or a running simulation.
 
 See the [air-like example](../examples/index.md#an-air-like-mixture-with-different-bonds).
 
+
+## Water: IceIh and Random
+
+```python
+from fys2160_md import IceIh, Random, RigidWater
+
+spce = RigidWater(oh_length=1.0, hoh_angle=109.47)          # Å, degrees
+ice = IceIh(N=768, density=0.92, molecule="water", bond=spce, seed=1)
+liquid = Random(N=512, box=24.86, molecule="water", bond=spce, min_distance=1.8)
+```
+
+Both return systems in LAMMPS `real` units with species `"O"` and `"H"`, three
+atoms per molecule (O first). `IceIh` needs N = 8·nx·ny·nz in a nearly cubic box
+and rejects other counts with suggestions. `RigidWater(..., m_distance=...)`
+adds a TIP4P-type M site. See [Water and electrostatics](../water.md).
 
 ## Plummer: an isolated gravitational cluster
 
