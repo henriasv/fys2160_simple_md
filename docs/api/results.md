@@ -28,7 +28,8 @@ The player is drawn with OMOVI when it can be loaded (see the
 [live view notes](simulation.md#live-view)); `renderer="basic"` selects the
 built-in renderer. The default samples at most 150 saved frames and 3000 atoms; full recorded data
 remain on disk. `projection` is `orthographic` or `perspective`; initial zoom
-must be between 0.25 and 3. Camera controls and playback work in exported HTML.
+must be between 0.25 and 3. With OMOVI, zoom 1 shows the whole box and larger
+values magnify its centre. Camera controls and playback work in exported HTML.
 This needs WebGL 2, but no Python kernel, remote scripts or simulation server.
 
 ## Recorded quantities

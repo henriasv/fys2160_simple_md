@@ -149,3 +149,15 @@ perspective (SSAO needs it; orthographic disables SSAO).
 omovi draws opaque (alpha:false in its Visualizer), so the scene background is set
 to the first non-transparent ancestor background (re-read on light/dark switches);
 the built-in canvas is transparent. True transparency would need an omovi option.
+
+2026-10-23 (0.2.1): OMOVI camera and lighting. The camera distance is computed so
+that all eight box corners are in view (5% margin) at zoom 1, with a 35° field of
+view (omovi's 60° looked lopsided and stretched spheres at the edges). zoom < 1 steps
+back; zoom > 1 narrows the field of view, so the camera never enters the box (the
+old distance/zoom put it among the atoms). The quickstart crystal and gas views no
+longer pass zoom=1.4, which was tuned for the built-in renderer. omovi's camera light
+fades with absolute distance (decay 0.8) and was tuned for boxes tens of Å wide;
+its intensity is scaled by (box half-diagonal / 25)^decay, so reduced-unit boxes
+are lit like a 25 Å (radius) water box instead of washed out. The orthographic frustum matches
+the perspective scale at the box centre (omovi uses half the distance). The
+glTexStorage2D zero-size warnings come from omovi's constructor and are harmless.

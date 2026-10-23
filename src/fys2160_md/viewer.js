@@ -172,10 +172,14 @@ function startOmovi([lib,THREE]){
     visualizer.setRadius(i,style.radius);
     smallest=Math.min(smallest,style.radius);mean+=style.radius/types.length;
   });
-  visualizer.pointLight.distance=0;  // camera light without range cut-off, for large boxes
+  const first=frames[+slider.value];
+  // The camera light fades with distance in absolute units, tuned for boxes of tens
+  // of Å; a reduced-unit box a few σ wide would be washed out. Scale its intensity
+  // so every box is lit as a 25 Å (radius) water box, without a range cut-off.
+  const light=visualizer.pointLight;
+  light.distance=0;light.intensity*=(.5*Math.hypot(...first.box)/25)**light.decay;
   visualizer.initPostProcessing({ssao:{enabled:true,radius:4*mean,intensity:5}});
   const particles=new lib.Particles(types.length);
-  const first=frames[+slider.value];
   types.forEach((t,i)=>particles.add(...first.x[i].map((v,d)=>v-.5*first.box[d]),i,t));
   visualizer.add(particles);
   const pairs=data.bonds||(data.molecular?Array.from({length:Math.floor(types.length/2)},(_,k)=>[2*k,2*k+1]):[]);
@@ -199,18 +203,45 @@ function startOmovi([lib,THREE]){
   box.geometry.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(72),3));
   box.frustumCulled=false;
   if(data.boundary!=='open')visualizer.scene.add(box);
+  const aspect=()=>container.clientWidth/container.clientHeight||1.2;
+  // A 35° field of view (omovi: 60°) keeps the perspective mild, so that a box
+  // that fits in the view still fills it and spheres near the edges stay round.
+  visualizer.perspectiveCamera.fov=35;
+  // At zoom 1 all eight box corners are in view, with a 5% margin. Smaller zooms
+  // step back; larger ones narrow the field of view, so the camera never moves
+  // into the box.
   function resetCamera(){
     const lengths=frames[+slider.value].box,longest=lengths.indexOf(Math.max(...lengths));
-    let direction=initial[2],distance=1.35*extent;
+    let direction=initial[2];
     if(Math.max(...lengths)>1.5*Math.min(...lengths)){
-      // Elongated box, such as a slab with vacuum: look across the long axis,
-      // which then runs horizontally across the view.
-      direction=longest===1?[0,.35,1]:longest===0?[0,.35,1]:[1,.35,0];
+      // Elongated box, such as a slab with vacuum: look across the long axis.
+      direction=longest===2?[1,.35,0]:[0,.35,1];
       const norm=Math.hypot(...direction);direction=direction.map(v=>v/norm);
-      distance=.85*extent;
     }
+    const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+    const across=Math.hypot(direction[0],direction[2]),right=[direction[2]/across,0,-direction[0]/across];
+    const up=[direction[1]*right[2]-direction[2]*right[1],direction[2]*right[0]-direction[0]*right[2],direction[0]*right[1]-direction[1]*right[0]];
+    const camera=visualizer.perspectiveCamera,tan=Math.tan(Math.PI*camera.fov/360);
+    let distance=0;
+    for(let c=0;c<8;c++){
+      const corner=lengths.map((v,d)=>(((c>>d)&1)-.5)*v),depth=dot(corner,direction);
+      distance=Math.max(distance,depth+Math.abs(dot(corner,right))/(tan*aspect()),depth+Math.abs(dot(corner,up))/tan);
+    }
+    const magnification=data.zoom||1;
+    camera.zoom=Math.max(magnification,1);camera.updateProjectionMatrix();
     visualizer.setCameraTarget(new THREE.Vector3(0,0,0));
-    visualizer.setCameraPosition(new THREE.Vector3(...direction.map(v=>v*distance/(data.zoom||1))));
+    visualizer.setCameraPosition(new THREE.Vector3(...direction.map(v=>v*1.05*distance/Math.min(magnification,1))));
+    fitOrthographic();
+  }
+  // omovi's orthographic frustum is half the camera distance high, far closer than the
+  // perspective view: match the perspective scale at the centre of the box instead.
+  function fitOrthographic(){
+    if(visualizer.camera!==visualizer.orthographicCamera)return;
+    const camera=visualizer.orthographicCamera,perspective=visualizer.perspectiveCamera;
+    const half=visualizer.getCameraPosition().distanceTo(visualizer.getCameraTarget())*Math.tan(Math.PI*perspective.fov/360)/perspective.zoom;
+    Object.assign(camera,{top:half,bottom:-half,left:-half*aspect(),right:half*aspect(),zoom:1});
+    camera.updateProjectionMatrix();
+    visualizer.forceRender=true;
   }
   function show(f){
     const half=f.box.map(v=>.5*v);
@@ -233,6 +264,7 @@ function startOmovi([lib,THREE]){
   }
   function setProjection(value){
     visualizer.setOrthographic(value==='orthographic');
+    fitOrthographic();
     visualizer.setSSAO(value!=='orthographic');  // omovi's ambient occlusion needs the perspective camera
   }
   // Pause rendering while the view is scrolled out of sight.
