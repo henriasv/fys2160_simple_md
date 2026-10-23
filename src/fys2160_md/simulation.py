@@ -14,6 +14,7 @@ from .results import Run, write_json
 from .species import parameter, per_atom, charges as _charges
 from .bonds import bond_config
 from .units import units as _units, AVOGADRO_PER_CM3_A3
+from ._version import __version__
 
 
 def _storage_name(value):
@@ -252,7 +253,7 @@ class MDSimulation:
             engine._deform = (engine._box.copy(), deform, start, steps)
         path = self.output_dir.resolve()/storage_name
         _replace_run_directory(path)
-        meta = dict(schema_version=1, package_version='0.1.0', label=storage_name,
+        meta = dict(schema_version=1, package_version=__version__, label=storage_name,
                     storage_name=storage_name,
                     created_at=datetime.now(timezone.utc).isoformat(), status='running',
                     configuration={**engine._config(), 'storage_name': storage_name}, atoms=len(engine._x),

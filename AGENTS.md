@@ -22,6 +22,8 @@ This repository contains the standalone course MD package. Python import:
 - Exact cubic FCC counts N=4n³; reject invalid counts with suggestions.
 - Never change geometry to satisfy a self-avoidance request silently.
 - Tests: `python -m unittest discover -s tests` and `node tests/test_viewer.cjs`.
+- Raise `src/fys2160_md/_version.py` for every release: pip treats a git install
+  with an unchanged version as already satisfied, even at a new pinned commit.
 - Before publishing docs, build with `python scripts/build_docs.py --execute`
   then `python -m mkdocs build --strict` and check the static trajectory players.
 
