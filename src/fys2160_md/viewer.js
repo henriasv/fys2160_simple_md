@@ -1,4 +1,26 @@
-/* Shared 3D renderer for live widgets and self-contained saved players. */
+/* Shared 3D renderer for live widgets and self-contained saved players.
+   OMOVI (github.com/andeplane/omovi, by Anders Hafreager) renders the scene when it
+   can be loaded from jsDelivr; the built-in WebGL renderer draws first and remains
+   the fallback offline. */
+const OMOVI_URL='https://cdn.jsdelivr.net/npm/omovi@0.25.0/+esm';
+const THREE_URL='https://cdn.jsdelivr.net/npm/three@0.181.2/+esm';  // the three.js that omovi imports
+const PALETTE=[[41,145,184],[214,122,48],[64,166,102],[153,102,191],[204,77,89],[128,140,153],[230,232,235]];
+// omovi 0.25 caches its particle/bond materials per module, so visualizers in one
+// page would share colours and radii. A distinct URL per view gives each its own
+// module instance (three.js stays shared).
+function loadOmovi(){
+  const view=globalThis.__fys2160OmoviViews=(globalThis.__fys2160OmoviViews||0)+1;
+  return Promise.all([import(OMOVI_URL+'?view='+view),import(THREE_URL)]);
+}
+// The colour behind an element: the first non-transparent ancestor background, so
+// views blend into light and dark pages alike.
+function pageBackground(node){
+  for(let e=node;e&&e.nodeType===1;e=e.parentElement){
+    const m=getComputedStyle(e).backgroundColor.match(/rgba?\(([^)]+)\)/);
+    if(m){const [r,g,b,a=1]=m[1].split(',').map(Number);if(a>0)return [r,g,b];}
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches?[30,30,30]:[255,255,255];
+}
 function createMDView(el,data){
 // Own the sizing element: widget hosts may manage/reset styles on their `el`.
 // A fixed CSS width scales with editor zoom; max-width only shrinks narrow panes.
@@ -6,7 +28,7 @@ const root=document.createElement('div'),frames=data.frames;
 root.dataset.mdView='';
 root.style.cssText='display:block;box-sizing:border-box;width:720px;max-width:100%;min-width:0;font:14px system-ui;color:#233744';
 el.replaceChildren(root);
-root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:#f4f7fa;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
+root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:transparent;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
 const speciesNames=[...new Set(data.species||[])];
 const speciesColors=['blue','orange','green','purple','red','grey','white'];
 // Conventional element colours for water; other species use the palette in order.
@@ -17,6 +39,7 @@ let state=data.live?'Running':'',pendingDraw=0;
 const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('button'),slider=root.querySelector('input'),label=root.querySelector('output');
 const projection=root.querySelector('select');projection.value=data.projection;
 const zoomSlider=root.querySelector('[aria-label="Zoom"]'),zoomLabel=root.querySelector('[data-zoom-value]');
+let omovi=null,disposed=false;
 let zoom=data.zoom;zoomSlider.value=Math.round(100*zoom);zoomLabel.textContent=Math.round(100*zoom)+'%';
 if(data.live){button.hidden=true;slider.hidden=true;canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');}
 slider.max=frames.length-1;const extent=Math.max(...frames.flatMap(f=>f.box));
@@ -43,6 +66,7 @@ function cameraPosition(p){
 // Rebuild the backing bitmap at the actual display resolution after editor zoom
 // or pane resizing; changing its attributes must not change the CSS aspect ratio.
 function draw(){
+if(omovi){omovi.show(frames[+slider.value]);updateLabel(frames[+slider.value]);return;}
 const bounds=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
 const width=Math.max(1,Math.round(bounds.width*dpr));
 const height=Math.max(1,Math.round(bounds.height*dpr));
@@ -67,7 +91,7 @@ function updateLabel(f){
 }
 function stop(){clearInterval(timer);timer=null;button.textContent='Play';}
 button.onclick=()=>{if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);};
-projection.onchange=draw;slider.oninput=draw;
+projection.onchange=()=>{if(omovi)omovi.setProjection(projection.value);draw();};slider.oninput=draw;
 canvas.onpointerdown=e=>{
   if(e.button!==0&&e.button!==2)return;
   e.preventDefault();canvas.setPointerCapture(e.pointerId);
@@ -96,7 +120,7 @@ zoomSlider.oninput=()=>setZoom(+zoomSlider.value/100);
 root.querySelector('[data-zoom-out]').onclick=()=>setZoom(zoom/1.2);
 root.querySelector('[data-zoom-in]').onclick=()=>setZoom(zoom*1.2);
 canvas.addEventListener('wheel',e=>{e.preventDefault();setZoom(zoom*Math.exp(e.deltaY*.001));},{passive:false});
-root.querySelector('[data-reset]').onclick=()=>{rotation=initial.map(row=>row.slice());pan=[0,0];setZoom(data.zoom);};
+root.querySelector('[data-reset]').onclick=()=>{rotation=initial.map(row=>row.slice());pan=[0,0];if(omovi)omovi.resetCamera();setZoom(data.zoom);};
 canvas.onkeydown=e=>{const delta={ArrowRight:[.08,0],ArrowLeft:[-.08,0],ArrowDown:[0,.08],ArrowUp:[0,-.08]}[e.key];if(delta){e.preventDefault();rotateView(...delta);draw();}};
 function requestDraw(){
   if(!pendingDraw)pendingDraw=requestAnimationFrame(()=>{pendingDraw=0;draw();});
@@ -113,13 +137,125 @@ function watchResolution(){
 }
 watchResolution();
 draw();
+// Per-atom omovi types: one per species (or per alternating diatomic atom), with
+// the same colours and display radii as the built-in renderer.
+function atomTypes(){
+  const count=frames[0].x.length,sigma=i=>typeof data.sigma==='object'?data.sigma[data.species[i]]:(data.sigma??1);
+  const types=[],styles=new Map();
+  for(let i=0;i<count;i++){
+    const key=speciesNames.length>0?speciesNames.indexOf(data.species[i]):(data.molecular?i%2:0);
+    const kind=speciesNames.length>0?kindOf(data.species[i]):key;
+    if(!styles.has(key+1))styles.set(key+1,{color:PALETTE[kind%7],radius:.5*sigma(i)});
+    types.push(key+1);
+  }
+  return {types,styles};
+}
+function startOmovi([lib,THREE]){
+  if(disposed)return;
+  const container=document.createElement('div');
+  container.style.cssText='display:block;width:100%;aspect-ratio:6/5;touch-action:none;position:relative;overflow:hidden';
+  container.setAttribute('aria-label',canvas.getAttribute('aria-label'));
+  const visualizer=new lib.Visualizer({domElement:container});
+  container.omovi=visualizer;container.omoviLibrary=lib;  // for inspection from the browser console
+  canvas.replaceWith(container);
+  renderer.dispose();
+  const lost=canvas.getContext('webgl2')?.getExtension('WEBGL_lose_context');if(lost)lost.loseContext();
+  const {types,styles}=atomTypes();
+  // omovi looks colours and radii up by particle id (not by type): set them per atom.
+  let smallest=Infinity,mean=0;
+  // In real units, species named after elements (O, H, ...) use omovi's element
+  // colours, as in Atomify; reduced-unit labels such as "B" are not boron.
+  const element=i=>data.units&&speciesNames.length>0?lib.AtomTypes?.[data.species[i]]:null;
+  types.forEach((t,i)=>{
+    const style=styles.get(t),own=element(i)?.color;
+    visualizer.setColor(i,own||{r:style.color[0],g:style.color[1],b:style.color[2]});
+    visualizer.setRadius(i,style.radius);
+    smallest=Math.min(smallest,style.radius);mean+=style.radius/types.length;
+  });
+  visualizer.pointLight.distance=0;  // camera light without range cut-off, for large boxes
+  visualizer.initPostProcessing({ssao:{enabled:true,radius:4*mean,intensity:5}});
+  const particles=new lib.Particles(types.length);
+  const first=frames[+slider.value];
+  types.forEach((t,i)=>particles.add(...first.x[i].map((v,d)=>v-.5*first.box[d]),i,t));
+  visualizer.add(particles);
+  const pairs=data.bonds||(data.molecular?Array.from({length:Math.floor(types.length/2)},(_,k)=>[2*k,2*k+1]):[]);
+  const bonds=pairs.length?new lib.Bonds(pairs.length):null;
+  if(bonds)visualizer.add(bonds);
+  // Bonds store a quarter of the given radius: pass 4x for a radius of 0.3 x the smallest atom.
+  const bondRadius=4*.3*smallest;
+  const box=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial());
+  // omovi draws opaque: paint the scene with the page colour, and box edges in a
+  // grey that stands out from it. Follow light/dark theme switches.
+  function matchPage(){
+    const [r,g,b]=pageBackground(root.parentElement||root);
+    visualizer.scene.background=new THREE.Color().setRGB(r/255,g/255,b/255,THREE.SRGBColorSpace);
+    const light=.2126*r+.7152*g+.0722*b>128;
+    box.material.color.setRGB(...(light?[.45,.5,.55]:[.62,.68,.73]),THREE.SRGBColorSpace);
+    visualizer.forceRender=true;
+  }
+  matchPage();
+  const theme=window.matchMedia?.('(prefers-color-scheme: dark)');
+  theme?.addEventListener('change',matchPage);
+  box.geometry.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(72),3));
+  box.frustumCulled=false;
+  if(data.boundary!=='open')visualizer.scene.add(box);
+  function resetCamera(){
+    const lengths=frames[+slider.value].box,longest=lengths.indexOf(Math.max(...lengths));
+    let direction=initial[2],distance=1.35*extent;
+    if(Math.max(...lengths)>1.5*Math.min(...lengths)){
+      // Elongated box, such as a slab with vacuum: look across the long axis,
+      // which then runs horizontally across the view.
+      direction=longest===1?[0,.35,1]:longest===0?[0,.35,1]:[1,.35,0];
+      const norm=Math.hypot(...direction);direction=direction.map(v=>v/norm);
+      distance=.85*extent;
+    }
+    visualizer.setCameraTarget(new THREE.Vector3(0,0,0));
+    visualizer.setCameraPosition(new THREE.Vector3(...direction.map(v=>v*distance/(data.zoom||1))));
+  }
+  function show(f){
+    const half=f.box.map(v=>.5*v);
+    for(let i=0;i<types.length;i++)for(let d=0;d<3;d++)particles.positions[3*i+d]=f.x[i][d]-half[d];
+    particles.markNeedsUpdate();
+    if(bonds){
+      bonds.count=0;
+      for(const [i,j] of pairs){
+        if(j>=types.length||!f.x[i].every((v,d)=>Math.abs(v-f.x[j][d])<half[d]))continue;
+        bonds.add(...f.x[i].map((v,d)=>v-half[d]),...f.x[j].map((v,d)=>v-half[d]),bondRadius);
+      }
+      bonds.markNeedsUpdate();
+    }
+    const edge=box.geometry.attributes.position.array;let k=0;
+    for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b){
+      for(const c of [a,b])for(let e=0;e<3;e++)edge[k++]=(((c>>e)&1)-.5)*f.box[e];
+    }}
+    box.geometry.attributes.position.needsUpdate=true;
+    visualizer.forceRender=true;
+  }
+  function setProjection(value){
+    visualizer.setOrthographic(value==='orthographic');
+    visualizer.setSSAO(value!=='orthographic');  // omovi's ambient occlusion needs the perspective camera
+  }
+  // Pause rendering while the view is scrolled out of sight.
+  const visibility=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{
+    for(const entry of entries)visualizer.idle=!entry.isIntersecting;
+  }):null;
+  if(visibility)visibility.observe(container);
+  omovi={show,setProjection,resetCamera,dispose(){if(visibility)visibility.disconnect();theme?.removeEventListener('change',matchPage);visualizer.dispose();}};
+  root.querySelector('[aria-label="Zoom"]').closest('label').style.display='none';  // omovi zooms with the wheel
+  resetCamera();setProjection(projection.value);draw();
+  const note=root.querySelector('[data-note]');note.textContent+=' Rendered with OMOVI.';
+}
+if(data.renderer!=='basic'){
+  const fallback=error=>console.warn('OMOVI unavailable; using the built-in renderer.',error);
+  try{loadOmovi().then(startOmovi).catch(fallback);}catch(error){fallback(error);}
+}
 return {
   setFrame(frame){
     frames[0]=frame;
     requestDraw();
   },
   setStatus(status){state=status.charAt(0).toUpperCase()+status.slice(1);updateLabel(frames[0]);},
-  dispose(){stop();renderer.dispose();resizeObserver.disconnect();resolution.removeEventListener('change',watchResolution);if(pendingDraw)cancelAnimationFrame(pendingDraw);}
+  dispose(){disposed=true;stop();if(omovi)omovi.dispose();else renderer.dispose();resizeObserver.disconnect();resolution.removeEventListener('change',watchResolution);if(pendingDraw)cancelAnimationFrame(pendingDraw);}
 };
 }
 

@@ -78,6 +78,7 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.dof` | Kinetic degrees of freedom with COM/rigid constraints removed |
 | `system.time`, `.step` | Clock of the state: zero for a new geometry, where the run ended for `run.state` |
 | `system.copy()` | Independent copy of the physical state |
+| `system.with_box(box)` | Copy in a larger periodic box, contents centred and molecules whole; enlarging one side gives a slab with vacuum ([evaporation](../water.md#evaporation-a-slab-with-vacuum)) |
 
 Array snapshots do not let you edit the running simulation. Construct a new
 System to specify different coordinates or velocities. The explicit-array

@@ -214,6 +214,38 @@ class System:
         other._pppm=None if self._pppm is None else (self._pppm[0].copy(),)+tuple(self._pppm[1:])
         return other
 
+    def with_box(self, box):
+        """Copy of this state in a larger periodic box, with the contents centred.
+
+        Molecules keep their positions relative to each other and stay whole;
+        nothing is stretched. Enlarging one side turns a bulk liquid into a slab
+        with two free surfaces and vacuum on both sides, for evaporation:
+        ``slab = state.with_box([Lx, Ly, 4*Lz])``. Velocities, masses and the
+        clock are kept; the barostat velocity and PPPM mesh choice are reset.
+        """
+        if self.boundary!='periodic':
+            raise ValueError('with_box needs a periodic system.')
+        old=self._box
+        new=np.broadcast_to(np.asarray(box,dtype=float),(3,)).copy()
+        if not np.isfinite(new).all() or np.any(new<old*(1-1e-12)):
+            raise ValueError(f'Each new box length must be at least the current one, {old.tolist()}.')
+        size=_SIZE[self.model]
+        x=self._x.reshape(-1,size,3)
+        m=self._mass.reshape(-1,size)
+        # Whole molecules: offsets from the first atom by minimum image, centre of
+        # mass wrapped into the old box, then the old box centred in the new one.
+        offset=x-x[:,:1]
+        offset-=old*np.rint(offset/old)
+        centre=x[:,0]+(m[:,:,None]*offset).sum(axis=1)/m.sum(axis=1)[:,None]
+        centre-=old*np.floor(centre/old)
+        local=offset-(m[:,:,None]*offset).sum(axis=1)[:,None,:]/m.sum(axis=1)[:,None,None]
+        positions=(centre[:,None,:]+local+.5*(new-old)).reshape(-1,3)
+        unwrapped=None if self._u is None else self._u+(positions-self._x)
+        other=System(positions,new,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,
+                     boundary=self.boundary,units=self.units,unwrapped=unwrapped,time=self._time,step=self._step)
+        other._rng,other._heat=self._rng,self._heat
+        return other
+
     @classmethod
     def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
         return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary,units=units)

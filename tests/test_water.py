@@ -164,6 +164,33 @@ class WaterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'nve'):
             sim.run(state, steps=10, ensemble='npt', pressure=1., deform=2.)
 
+    def test_with_box_makes_a_slab_of_whole_molecules(self):
+        sim = self.simulation(ensemble='npt', pressure=1.)
+        state = sim.run(self.ice(), steps=20, thermo_every=10, trajectory_every=None, storage_name='bulk').state
+        old = state.box.lengths
+        slab = state.with_box([old[0], old[1], 3*old[2]])
+        np.testing.assert_allclose(slab.box.lengths, [old[0], old[1], 3*old[2]])
+        np.testing.assert_array_equal(state.box.lengths, old)  # the input state is unchanged
+        np.testing.assert_array_equal(slab.atoms.velocities, state.atoms.velocities)
+        self.assertEqual((slab.time, slab.step, slab._rate, slab._pppm), (state.time, state.step, 0., None))
+        x, L = slab.atoms.positions, slab.box.lengths
+        for (a, b), length in zip(((0, 1), (0, 2), (1, 2)), SPCE.constraints):
+            dr = x[a::3]-x[b::3]; dr -= L*np.rint(dr/L)
+            np.testing.assert_allclose(np.linalg.norm(dr, axis=1), length, atol=1e-11)
+            # No molecule straddles the new vacuum: whole along z without images.
+            self.assertLess(np.abs(x[a::3, 2]-x[b::3, 2]).max(), length+1e-9)
+        z = x[:, 2]
+        self.assertGreater(z.min(), old[2]-1.5)  # centred: vacuum of about old[2] on each side
+        self.assertLess(z.max(), 2*old[2]+1.5)
+        # Atoms move only by whole old-box lengths (plus the centring shift along z).
+        shift = (x - state.atoms.positions)/old - [0, 0, 1]
+        np.testing.assert_allclose(shift - np.rint(shift), 0, atol=1e-9)
+        result = sim.run(slab, steps=20, ensemble='nvt', thermo_every=10, trajectory_every=None, storage_name='slab')
+        self.assertGreater(result.metadata['pppm']['mesh'][2], 2*result.metadata['pppm']['mesh'][0])
+        for bad in ([old[0], old[1], .5*old[2]], [np.nan, old[1], old[2]]):
+            with self.assertRaises(ValueError):
+                state.with_box(bad)
+
     def test_runs_are_independent_of_recording_and_resume_exactly(self):
         sim, ice = self.simulation(ensemble='npt', pressure=1.), self.ice()
         a = sim.run(ice, steps=30, thermo_every=1, trajectory_every=None, storage_name='a')

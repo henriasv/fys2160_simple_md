@@ -126,3 +126,24 @@ alias are removed. Tests use MDSimulation(...)._engine(state) for low-level
 checks. Golden trajectories and all example outputs are unchanged by the
 refactor. The private Lab 2 notebook passes each stage's .state explicitly.
 
+
+2026-10-09: System.with_box(box) copies a state into a larger periodic box with
+the contents centred and molecules whole (no stretching); enlarging one side
+gives a liquid slab with vacuum for evaporation (direct coexistence), the
+standard alternative to deform. 768 SPC/E waters in a 5x box: ~16 ms/step;
+vapour holds ~3-6 molecules at 500 K, almost none at 400 K. The private Lab 2
+notebook now uses ice -> melting (350 K) -> slab evaporation at 500 K.
+
+2026-10-23: Live and saved views render with OMOVI (andeplane/omovi 0.25.0,
+three 0.181.2, loaded from jsDelivr +esm at view time; Anders Hafreager allows any
+use). viewer.js draws with the built-in renderer first, then switches; offline or
+renderer="basic" keeps the built-in one. omovi looks colours/radii up by particle
+id (not type), so they are set per atom; element-named species use omovi
+AtomTypes colours. omovi 0.25 caches materials in a module-level map, so each view
+imports omovi under its own URL (?view=N) to avoid shared colours; an upstream fix
+would remove this. IntersectionObserver sets visualizer.idle off screen. Elongated
+boxes (slabs) get a camera across the long axis. Default projection is now
+perspective (SSAO needs it; orthographic disables SSAO).
+omovi draws opaque (alpha:false in its Visualizer), so the scene background is set
+to the first non-transparent ancestor background (re-read on light/dark switches);
+the built-in canvas is transparent. True transparency would need an omovi option.

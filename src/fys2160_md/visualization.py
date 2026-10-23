@@ -6,7 +6,7 @@ import uuid
 import numpy as np
 
 # Ball-and-stick display diameters (Å) for water; they do not affect the physics.
-WATER_DISPLAY = {'O': 1.3, 'H': .7}
+WATER_DISPLAY = {'O': .8, 'H': .5}
 VIEW_UNITS = {'real': dict(time='ps', time_scale=.001, temperature='K', pressure='atm')}
 
 
@@ -109,13 +109,15 @@ class LiveView:
             self.widget.status = status
 
 
-def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='orthographic', zoom=1.0, particle_radius=None):
+def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='perspective', zoom=1.0, particle_radius=None, renderer='omovi'):
     from IPython.display import HTML
     zoom = float(zoom)
     if not np.isfinite(zoom) or not .25 <= zoom <= 3:
         raise ValueError('zoom must be between 0.25 and 3.')
     if projection not in ('orthographic', 'perspective'):
         raise ValueError('projection must be orthographic or perspective.')
+    if renderer not in ('omovi', 'basic'):
+        raise ValueError('renderer must be "omovi" or "basic".')
     if int(max_frames) != max_frames or max_frames < 2 or int(max_atoms) != max_atoms or max_atoms < 2:
         raise ValueError('max_frames and max_atoms must be integers >= 2.')
     paths = sorted((run.path/'frames').glob('*.npz'))
@@ -131,14 +133,14 @@ def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='orthog
                                box=f['box'].tolist(), time=float(f['time']), step=int(f['step'])))
     species = run.metadata.get('atom_species', [])[:int(max_atoms)]
     display_sigma, extra = _display(config, species, particle_radius)
-    data = dict(boundary=config.get('boundary','periodic'), frames=frames, projection=projection, zoom=zoom, sigma=display_sigma, species=species, molecular=config['model'] != 'atomic', **extra)
+    data = dict(boundary=config.get('boundary','periodic'), frames=frames, projection=projection, zoom=zoom, sigma=display_sigma, species=species, molecular=config['model'] != 'atomic', renderer=renderer, **extra)
     identifier = 'md-'+uuid.uuid4().hex
     note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll over the view to zoom. Arrow keys also rotate the focused view. Display sampling does not change saved data.'
     if config.get('boundary') == 'open':
         note += ' Isolated cluster: no walls or periodic images. The view may omit distant particles; the solver retains them.'
     data.update(note=note, live=False)
-    renderer = Path(__file__).with_name('viewer.js').read_text()
-    markup = (f'<div id="{identifier}"></div><script>(()=>{{' + renderer +
+    script = Path(__file__).with_name('viewer.js').read_text()
+    markup = (f'<div id="{identifier}"></div><script>(()=>{{' + script +
               f'createMDView(document.getElementById("{identifier}"),{json.dumps(data)});' +
               '})();</script>')
     return HTML(markup)

@@ -89,12 +89,16 @@ class Run:
         fig.tight_layout()
         return fig
 
-    def view(self, *, max_frames=150, max_atoms=3000, projection='orthographic', zoom=1.0, particle_radius=None):
-        """Return a self-contained notebook trajectory player with drag-to-rotate.
+    def view(self, *, max_frames=150, max_atoms=3000, projection='perspective', zoom=1.0, particle_radius=None, renderer='omovi'):
+        """Return a notebook trajectory player with drag-to-rotate.
 
-        particle_radius sets display sizes only: one value, or one per species."""
+        renderer="omovi" draws with OMOVI (loaded from jsDelivr, with ambient
+        occlusion in perspective view); without a network connection, or with
+        renderer="basic", the built-in renderer is used. particle_radius sets
+        display sizes only: one value, or one per species."""
         from .visualization import trajectory_player
-        return trajectory_player(self, max_frames=max_frames, max_atoms=max_atoms, projection=projection, zoom=zoom, particle_radius=particle_radius)
+        return trajectory_player(self, max_frames=max_frames, max_atoms=max_atoms, projection=projection, zoom=zoom,
+                                 particle_radius=particle_radius, renderer=renderer)
 
     def __repr__(self):
         return (f"Run(storage_name={self.metadata.get('storage_name', self.metadata.get('label'))!r}, "

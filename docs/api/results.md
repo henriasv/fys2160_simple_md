@@ -24,7 +24,9 @@ Loading a run reads files and does **not** start a simulation.
 saved.view(max_frames=150, max_atoms=1500, projection="orthographic", zoom=1.0)
 ```
 
-The default samples at most 150 saved frames and 3000 atoms; full recorded data
+The player is drawn with OMOVI when it can be loaded (see the
+[live view notes](simulation.md#live-view)); `renderer="basic"` selects the
+built-in renderer. The default samples at most 150 saved frames and 3000 atoms; full recorded data
 remain on disk. `projection` is `orthographic` or `perspective`; initial zoom
 must be between 0.25 and 3. Camera controls and playback work in exported HTML.
 This needs WebGL 2, but no Python kernel, remote scripts or simulation server.

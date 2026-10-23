@@ -143,6 +143,13 @@ Only the latest snapshot is sent; at most 3000 atoms (whole molecules) are shown
 - Perspective and orthographic views use sphere-surface depth for correct overlaps.
 - LJ particle radius is 0.5σ; gravity uses display markers of radius 0.035. Reset restores pan, rotation and zoom.
 
+Live and saved views are drawn with [OMOVI](https://github.com/andeplane/omovi)
+by Anders Hafreager, the renderer used in Atomify, loaded from jsDelivr when the
+view opens. It adds ambient occlusion in perspective view and draws bonds as
+cylinders; drag rotates, right-drag pans and the mouse wheel zooms. Without a
+network connection, or with `run.view(renderer="basic")`, the built-in renderer
+is used. Views that are scrolled out of sight pause rendering.
+
 ## Storage and interruption
 
 A run writes `output_dir/storage_name`. Reusing a name replaces that saved run,

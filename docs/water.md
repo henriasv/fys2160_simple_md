@@ -114,6 +114,35 @@ needs time to start melting. 768 SPC/E molecules started from `IceIh` stay
 crystalline for about 25 ps at 310 K, both here and in LAMMPS, and then melt.
 Larger boxes and higher temperatures melt sooner.
 
+## Evaporation: a slab with vacuum
+
+The standard way to study evaporation in MD is a liquid **slab** with free
+surfaces. `state.with_box(box)` returns a copy of a state in a larger periodic
+box, with the contents centred and every molecule kept whole; nothing is
+stretched. Enlarging one side of a bulk liquid leaves a slab with vacuum on both
+sides:
+
+```python
+liquid = melting_run.state
+Lx, Ly, Lz = liquid.box.lengths
+slab = liquid.with_box([Lx, Ly, 5*Lz])
+evaporation = sim.run(slab, steps=10000, ensemble="nvt", temperature=500,
+                      thermo_every=50, trajectory_every=250, storage_name="evaporation")
+```
+
+Molecules leave the surfaces until the vapour reaches its saturation density;
+then evaporation and condensation balance. The vapour density gives the vapour
+pressure, roughly P = n kB T for a dilute vapour. Repeating at several
+temperatures gives ln P against 1/T, whose slope is the enthalpy of vaporization
+(Clausius–Clapeyron). Water models have low vapour pressures: with 768 SPC/E
+molecules and a 5× box, the vapour holds only about 3–6 molecules at 500 K and
+hardly any at 400 K. The scalar pressure of a slab system is not the vapour
+pressure, since the slab and vacuum are not one uniform phase.
+
+The electrostatics use the ordinary three-dimensional PPPM sum on the elongated
+box, as is usual for slab simulations of water. The mesh grows with the box:
+768 molecules in a 5× box take about 16 ms per step.
+
 ## Electrostatics: PPPM
 
 The Coulomb energy of the periodic system is split into a short-range part,
