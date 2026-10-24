@@ -173,11 +173,19 @@ function startOmovi([lib,THREE]){
     smallest=Math.min(smallest,style.radius);mean+=style.radius/types.length;
   });
   const first=frames[+slider.value];
-  // The camera light fades with distance in absolute units, tuned for boxes of tens
-  // of Å; a reduced-unit box a few σ wide would be washed out. Scale its intensity
-  // so every box is lit as a 25 Å (radius) water box, without a range cut-off.
+  // omovi puts its point light half a box diagonal from the centre, which suits
+  // Å-sized systems; in a dense reduced-unit box that is about 1σ in front of the
+  // nearest face, so most spheres are lit from the side (half-moon shading). Use a
+  // key light just above and left of the camera instead, without distance fall-off,
+  // so boxes of every size are lit alike.
   const light=visualizer.pointLight;
-  light.distance=0;light.intensity*=(.5*Math.hypot(...first.box)/25)**light.decay;
+  light.distance=0;light.decay=0;light.intensity=2.5;
+  visualizer.updatePointLightPosition=()=>{
+    const camera=visualizer.camera;camera.updateMatrixWorld();
+    const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0);
+    const up=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,1);
+    light.position.copy(camera.position).addScaledVector(up.sub(right),.3*camera.position.distanceTo(visualizer.getCameraTarget()));
+  };
   visualizer.initPostProcessing({ssao:{enabled:true,radius:4*mean,intensity:5}});
   const particles=new lib.Particles(types.length);
   types.forEach((t,i)=>particles.add(...first.x[i].map((v,d)=>v-.5*first.box[d]),i,t));

@@ -155,9 +155,14 @@ that all eight box corners are in view (5% margin) at zoom 1, with a 35° field 
 view (omovi's 60° looked lopsided and stretched spheres at the edges). zoom < 1 steps
 back; zoom > 1 narrows the field of view, so the camera never enters the box (the
 old distance/zoom put it among the atoms). The quickstart crystal and gas views no
-longer pass zoom=1.4, which was tuned for the built-in renderer. omovi's camera light
-fades with absolute distance (decay 0.8) and was tuned for boxes tens of Å wide;
-its intensity is scaled by (box half-diagonal / 25)^decay, so reduced-unit boxes
-are lit like a 25 Å (radius) water box instead of washed out. The orthographic frustum matches
+longer pass zoom=1.4, which was tuned for the built-in renderer. The orthographic frustum matches
 the perspective scale at the box centre (omovi uses half the distance). The
 glTexStorage2D zero-size warnings come from omovi's constructor and are harmless.
+
+2026-10-24 (0.2.2): omovi places its point light half a box diagonal from the
+centre (fine for Å-sized systems); in dense reduced-unit boxes that is ~1σ in front
+of the nearest face, so spheres showed hard half-moon shading. viewer.js replaces
+visualizer.updatePointLightPosition with a key light 0.3·distance above and left of
+the camera, decay 0 and intensity 2.5, the same for every box size. This overrides
+an omovi-internal method (fine for the pinned 0.25.0); an upstream light option
+would be cleaner.
