@@ -135,7 +135,7 @@ def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='perspe
     display_sigma, extra = _display(config, species, particle_radius)
     data = dict(boundary=config.get('boundary','periodic'), frames=frames, projection=projection, zoom=zoom, sigma=display_sigma, species=species, molecular=config['model'] != 'atomic', renderer=renderer, **extra)
     identifier = 'md-'+uuid.uuid4().hex
-    note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll over the view to zoom. Arrow keys also rotate the focused view. Display sampling does not change saved data.'
+    note = f'{len(frames)} of {len(paths)} saved frames; {len(frames[0]["x"])} of {run.metadata["atoms"]} atoms. Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll over the view to zoom. Arrow keys also rotate the focused view, and space plays and pauses. Display sampling does not change saved data.'
     if config.get('boundary') == 'open':
         note += ' Isolated cluster: no walls or periodic images. The view may omit distant particles; the solver retains them.'
     data.update(note=note, live=False)

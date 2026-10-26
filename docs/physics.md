@@ -126,7 +126,7 @@ units. Their size relative to the box therefore reflects density; the radius is
 an illustrative size, not a hard-sphere collision boundary. One-finger
 click-and-drag rotates. Two-finger click-and-drag (secondary-button drag), or
 Shift-drag, pans; two simultaneous touchscreen contacts also pan. Arrow keys
-rotate a focused canvas. Two-finger scrolling zooms, with positive scroll
+rotate a focused canvas, and space plays and pauses a saved trajectory. Two-finger scrolling zooms, with positive scroll
 zooming in; buttons and the slider offer the same control. `view(zoom=1.5)` sets
 the initial magnification. Reset view restores the angle, pan and zoom.
 The renderer owns a separate 720 CSS-pixel-wide element inside the widget host,

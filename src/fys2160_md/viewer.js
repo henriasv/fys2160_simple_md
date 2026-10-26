@@ -90,7 +90,14 @@ function updateLabel(f){
       +(Number.isFinite(f.pressure)?(u?' · P '+f.pressure.toPrecision(4)+' '+u.pressure:' · P* '+f.pressure.toPrecision(4)):''):'');
 }
 function stop(){clearInterval(timer);timer=null;button.textContent='Play';}
-button.onclick=()=>{if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);};
+function togglePlay(){if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);}
+button.onclick=togglePlay;
+// Space plays and pauses a focused saved view; live views have no playback.
+function playKey(e){
+  if(e.key!==' '||data.live)return false;
+  e.preventDefault();if(!e.repeat)togglePlay();
+  return true;
+}
 projection.onchange=()=>{if(omovi)omovi.setProjection(projection.value);draw();};slider.oninput=draw;
 canvas.onpointerdown=e=>{
   if(e.button!==0&&e.button!==2)return;
@@ -121,7 +128,7 @@ root.querySelector('[data-zoom-out]').onclick=()=>setZoom(zoom/1.2);
 root.querySelector('[data-zoom-in]').onclick=()=>setZoom(zoom*1.2);
 canvas.addEventListener('wheel',e=>{e.preventDefault();setZoom(zoom*Math.exp(e.deltaY*.001));},{passive:false});
 root.querySelector('[data-reset]').onclick=()=>{rotation=initial.map(row=>row.slice());pan=[0,0];if(omovi)omovi.resetCamera();setZoom(data.zoom);};
-canvas.onkeydown=e=>{const delta={ArrowRight:[.08,0],ArrowLeft:[-.08,0],ArrowDown:[0,.08],ArrowUp:[0,-.08]}[e.key];if(delta){e.preventDefault();rotateView(...delta);draw();}};
+canvas.onkeydown=e=>{if(playKey(e))return;const delta={ArrowRight:[.08,0],ArrowLeft:[-.08,0],ArrowDown:[0,.08],ArrowUp:[0,-.08]}[e.key];if(delta){e.preventDefault();rotateView(...delta);draw();}};
 function requestDraw(){
   if(!pendingDraw)pendingDraw=requestAnimationFrame(()=>{pendingDraw=0;draw();});
 }
@@ -155,6 +162,10 @@ function startOmovi([lib,THREE]){
   const container=document.createElement('div');
   container.style.cssText='display:block;width:100%;aspect-ratio:6/5;touch-action:none;position:relative;overflow:hidden';
   container.setAttribute('aria-label',canvas.getAttribute('aria-label'));
+  // Focusable, and focused by a click or touch, so that space toggles playback.
+  container.tabIndex=0;
+  container.addEventListener('pointerdown',()=>container.focus({preventScroll:true}),true);
+  container.addEventListener('keydown',playKey);
   const visualizer=new lib.Visualizer({domElement:container});
   container.omovi=visualizer;container.omoviLibrary=lib;  // for inspection from the browser console
   canvas.replaceWith(container);

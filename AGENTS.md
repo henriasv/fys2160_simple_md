@@ -166,3 +166,7 @@ visualizer.updatePointLightPosition with a key light 0.3·distance above and lef
 the camera, decay 0 and intensity 2.5, the same for every box size. This overrides
 an omovi-internal method (fine for the pinned 0.25.0); an upstream light option
 would be cleaner.
+
+2026-10-26 (0.2.3): space plays and pauses a focused saved view. The OMOVI container
+is focusable (tabIndex 0) and takes focus on pointerdown; the built-in canvas
+already had tabindex. Key repeat is ignored and live views have no playback.
