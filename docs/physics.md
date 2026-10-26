@@ -126,9 +126,15 @@ units. Their size relative to the box therefore reflects density; the radius is
 an illustrative size, not a hard-sphere collision boundary. One-finger
 click-and-drag rotates. Two-finger click-and-drag (secondary-button drag), or
 Shift-drag, pans; two simultaneous touchscreen contacts also pan. Arrow keys
-rotate a focused canvas, and space plays and pauses a saved trajectory. Two-finger scrolling zooms, with positive scroll
-zooming in; buttons and the slider offer the same control. `view(zoom=1.5)` sets
-the initial magnification. Reset view restores the angle, pan and zoom.
+rotate a focused canvas, and space plays and pauses a saved trajectory.
+Two-finger scrolling zooms, with positive scroll zooming in; the built-in
+renderer also has zoom buttons. `view(zoom=1.5)` sets the initial magnification.
+Below the view, a control bar holds play/pause, the frame slider and counter,
+playback speed, reset view, the projection and a **?** button that shows these
+notes. A live view shows the run status instead. Reset view restores pan and zoom
+and the starting direction: a slightly angled view in perspective, and a face-on
+view of the xz plane (z up) in orthographic projection. For a box elongated along
+z, such as a slab, the long axis runs across the view instead.
 The renderer owns a separate 720 CSS-pixel-wide element inside the widget host,
 so editor zoom scales it along with other notebook content. Narrow panes shrink
 it to fit. Its canvas redraws at the current display resolution. After updating

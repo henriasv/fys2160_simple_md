@@ -170,3 +170,15 @@ would be cleaner.
 2026-10-26 (0.2.3): space plays and pauses a focused saved view. The OMOVI container
 is focusable (tabIndex 0) and takes focus on pointerdown; the built-in canvas
 already had tabindex. Key repeat is ignored and live views have no playback.
+
+2026-10-26 (0.2.4): redesigned view controls (VIEW_MARKUP/VIEW_STYLE in viewer.js).
+The view and a footer bar form a square-cornered card: row 1 is playback (accent
+play/pause, frame slider, "i / n" counter; hidden for live views), row 2 the
+readout with species colour chips and tools (speed 0.5-4x, zoom buttons for the
+built-in renderer only, reset, projection, "?" which reveals the note). Live views
+show a status pill (running/completed/interrupted/failed). Colours derive from the
+page text colour (color-mix with currentColor), so light and dark hosts both work;
+root colour now inherits. The orthographic OMOVI frustum fits the box corners plus
+the largest atom radius. Reset (and the initial view) is the angled view in
+perspective and face-on to the xz plane (z up; z across for z-elongated boxes) in
+orthographic. omovi's orbit controls are y-up, so the camera sits 1e-6 off the pole.

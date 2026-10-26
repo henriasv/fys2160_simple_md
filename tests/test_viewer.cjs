@@ -10,7 +10,10 @@ const canvas = {
 };
 const controls = new Map([['canvas',canvas]]);
 const root = {style:{},dataset:{},isConnected:true,
-  querySelector(selector){if(!controls.has(selector))controls.set(selector,{value:0});return controls.get(selector);}
+  querySelector(selector){
+    if(!controls.has(selector))controls.set(selector,{value:0,style:{},dataset:{},attributes:{},setAttribute(k,v){this.attributes[k]=v;}});
+    return controls.get(selector);
+  }
 };
 const host = {style:{cssText:'display:contents'},replaceChildren(child){this.child=child;}};
 const sandbox = {
@@ -75,10 +78,19 @@ larger.dispose();
 // Space toggles playback in a focused saved view, ignoring key repeat.
 const key=(k,repeat=false)=>({key:k,repeat,preventDefault(){}});
 const saved=sandbox.createMDView(host,{frames:[frame,frame],projection:'orthographic',zoom:1,note:''});
-canvas.onkeydown(key(' '));assert.equal(controls.get('button').textContent,'Pause');
-canvas.onkeydown(key(' ',true));assert.equal(controls.get('button').textContent,'Pause');
-canvas.onkeydown(key(' '));assert.equal(controls.get('button').textContent,'Play');
+const play=()=>controls.get('[data-play]').attributes['aria-label'];
+assert.equal(controls.get('[data-count]').textContent,'1 / 2');
+canvas.onkeydown(key(' '));assert.equal(play(),'Pause');
+canvas.onkeydown(key(' ',true));assert.equal(play(),'Pause');
+canvas.onkeydown(key(' '));assert.equal(play(),'Play');
+controls.get('[data-speed]').onclick();assert.equal(controls.get('[data-speed]').textContent,'2\u00d7');
 saved.dispose();
+// Live views show a run status instead of playback.
+const live=sandbox.createMDView(host,{frames:[frame],projection:'orthographic',zoom:1,live:true,note:''});
+assert.equal(controls.get('[data-status]').hidden,false);assert.equal(controls.get('[data-play]').hidden,true);
+live.setStatus('completed');assert.equal(controls.get('[data-status-text]').textContent,'Completed');
+assert.equal(controls.get('[data-status]').dataset.state,'completed');
+live.dispose();
 const mixture=sandbox.createMDView(host,{frames:[frame],species:['A','B'],sigma:{A:1,B:1.5},projection:'orthographic',zoom:1,live:true,note:''});
 assert.equal(images[0][2],30);assert.equal(images[1][2],45);
 assert.ok(controls.get('[data-note]').textContent.includes('B (orange)'));mixture.dispose();
@@ -98,4 +110,4 @@ assert.ok(controls.get('output').textContent.includes('t 1.50 ps'));
 assert.ok(controls.get('output').textContent.includes('T 300.0 K'));
 assert.ok(controls.get('output').textContent.includes('P 1.250 atm'));
 water.dispose();
-console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, space playback, sizing, water display and cleanup.');
+console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, playback controls, live status, sizing, water display and cleanup.');

@@ -21,34 +21,122 @@ function pageBackground(node){
   }
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches?[30,30,30]:[255,255,255];
 }
+const ICONS={
+  play:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.2v13.6L18.6 12z"/></svg>',
+  pause:'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 5h4v14h-4zm7 0h4v14h-4z"/></svg>',
+  reset:'<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v4h4"/></svg>'
+};
+function escapeHTML(text){return String(text).replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');}
+// The controls take their colours from the surrounding text colour, so they suit
+// light and dark pages; the accent is the first palette colour.
+const VIEW_STYLE=`
+[data-md-view]{--md-accent:#2991b8;--md-line:color-mix(in srgb,currentColor 16%,transparent);--md-soft:color-mix(in srgb,currentColor 5%,transparent);--md-muted:color-mix(in srgb,currentColor 65%,transparent)}
+[data-md-view] [hidden]{display:none!important}
+[data-md-view] .md-card{border:1px solid var(--md-line)}
+[data-md-view] .md-card>[tabindex]:focus-visible{outline:2px solid var(--md-accent);outline-offset:-2px}
+[data-md-view] .md-bar{border-top:1px solid var(--md-line);background:var(--md-soft);padding:6px 8px}
+[data-md-view] .md-row{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+[data-md-view] .md-btn,[data-md-view] select{all:unset;box-sizing:border-box;height:30px;border-radius:7px;cursor:pointer;color:inherit;font:600 13px/30px system-ui,sans-serif}
+[data-md-view] .md-btn{display:inline-flex;align-items:center;justify-content:center;min-width:30px;padding:0 7px}
+[data-md-view] .md-btn:hover,[data-md-view] select:hover{background:var(--md-line)}
+[data-md-view] .md-btn:focus-visible,[data-md-view] select:focus-visible,[data-md-view] input:focus-visible{outline:2px solid var(--md-accent);outline-offset:1px}
+[data-md-view] .md-btn svg{width:16px;height:16px;fill:currentColor}
+[data-md-view] .md-btn svg[stroke]{fill:none}
+[data-md-view] .md-play{width:32px;height:32px;padding:0;border-radius:50%;background:var(--md-accent);color:#fff}
+[data-md-view] .md-play:hover{background:color-mix(in srgb,var(--md-accent) 82%,#000)}
+[data-md-view] input[type=range]{flex:1 1 160px;min-width:40px;margin:0 6px;accent-color:var(--md-accent);cursor:pointer}
+[data-md-view] .md-count,[data-md-view] output{font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;color:var(--md-muted)}
+[data-md-view] .md-count{min-width:9ch;text-align:right;margin-right:4px}
+[data-md-view] .md-tools{display:flex;align-items:center;gap:2px;margin-left:auto}
+[data-md-view] select{padding:0 24px 0 9px;font-weight:500;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.6'/%3E%3C/svg%3E") no-repeat right 8px center/10px}
+[data-md-view] select option{color:#222;background:#fff}
+[data-md-view] .md-info{gap:4px 12px;padding-left:2px}
+[data-md-view] [data-playback]{flex-wrap:nowrap}
+[data-md-view] [data-playback]+.md-info{margin-top:2px}
+[data-md-view] .md-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--md-muted)}
+[data-md-view] .md-chip{display:inline-flex;align-items:center;gap:5px}
+[data-md-view] .md-chip::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--c);box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
+[data-md-view] .md-status{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 11px 0 9px;border-radius:15px;background:var(--md-line);font:600 12px system-ui,sans-serif}
+[data-md-view] .md-dot{width:8px;height:8px;border-radius:50%;background:#8a949c}
+[data-md-view] [data-state=running] .md-dot{background:#3aa76d;animation:md-pulse 1.6s ease-in-out infinite}
+[data-md-view] [data-state=interrupted] .md-dot{background:#d99a2b}
+[data-md-view] [data-state=failed] .md-dot{background:#d0504a}
+@keyframes md-pulse{50%{opacity:.3}}
+@media (prefers-reduced-motion:reduce){[data-md-view] .md-dot{animation:none}}
+[data-md-view] [data-note]{margin:8px 2px 0;font-size:12.5px;line-height:1.5;color:var(--md-muted)}
+`;
+const VIEW_MARKUP=`<style>${VIEW_STYLE}</style>
+<div class="md-card">
+<canvas tabindex="0" width="720" height="600" style="display:block;width:100%;height:auto;aspect-ratio:6/5;background:transparent;touch-action:none" aria-label="Molecular trajectory, drag to rotate"></canvas>
+<div class="md-bar">
+<div class="md-row" data-playback>
+<button type="button" class="md-btn md-play" data-play aria-label="Play" title="Play (space)">${ICONS.play}</button>
+<input type="range" aria-label="Trajectory frame" min="0" value="0">
+<span class="md-count" data-count></span>
+</div>
+<div class="md-row md-info">
+<span class="md-status" data-status hidden><span class="md-dot"></span><span data-status-text></span></span>
+<output></output><span class="md-legend" data-legend></span>
+<span class="md-tools">
+<button type="button" class="md-btn" data-speed aria-label="Playback speed" title="Playback speed">1×</button>
+<button type="button" class="md-btn" data-zoom-out aria-label="Zoom out" title="Zoom out">−</button>
+<button type="button" class="md-btn" data-zoom-in aria-label="Zoom in" title="Zoom in">+</button>
+<button type="button" class="md-btn" data-reset aria-label="Reset view" title="Reset view">${ICONS.reset}</button>
+<select aria-label="Projection" title="Projection"><option value="perspective">Perspective</option><option value="orthographic">Orthographic</option></select>
+<button type="button" class="md-btn" data-help aria-label="Controls and details" aria-expanded="false" title="Controls and details">?</button>
+</span>
+</div>
+</div>
+</div>
+<p data-note hidden></p>`;
 function createMDView(el,data){
 // Own the sizing element: widget hosts may manage/reset styles on their `el`.
 // A fixed CSS width scales with editor zoom; max-width only shrinks narrow panes.
 const root=document.createElement('div'),frames=data.frames;
 root.dataset.mdView='';
-root.style.cssText='display:block;box-sizing:border-box;width:720px;max-width:100%;min-width:0;font:14px system-ui;color:#233744';
+root.style.cssText='display:block;box-sizing:border-box;width:720px;max-width:100%;min-width:0;font:14px system-ui;color:inherit';
 el.replaceChildren(root);
-root.innerHTML="\n<canvas tabindex=\"0\" width=\"720\" height=\"600\" style=\"display:block;width:100%;height:auto;aspect-ratio:6/5;background:transparent;touch-action:none\" aria-label=\"Molecular trajectory, drag to rotate\"></canvas>\n<div style=\"display:flex;gap:12px;align-items:center;margin:10px 0\"><button type=\"button\">Play</button><button type=\"button\" data-reset>Reset view</button><input aria-label=\"Trajectory frame\" type=\"range\" min=\"0\" value=\"0\" style=\"flex:1\"><output></output></div><div style=\"display:flex;align-items:center;gap:12px;flex-wrap:wrap\"><label>Projection <select aria-label=\"Projection\"><option value=\"orthographic\">Orthographic</option><option value=\"perspective\">Perspective</option></select></label><label style=\"display:flex;align-items:center;gap:8px\">Zoom <button type=\"button\" aria-label=\"Zoom out\" data-zoom-out>\u2212</button><input type=\"range\" aria-label=\"Zoom\" min=\"25\" max=\"300\" step=\"1\" value=\"100\" style=\"width:130px\"><button type=\"button\" aria-label=\"Zoom in\" data-zoom-in>+</button><span data-zoom-value>100%</span></label></div><p data-note></p>\n";
+root.innerHTML=VIEW_MARKUP;
 const speciesNames=[...new Set(data.species||[])];
 const speciesColors=['blue','orange','green','purple','red','grey','white'];
 // Conventional element colours for water; other species use the palette in order.
 const elementKinds={O:4,H:6};
 const kindOf=name=>name in elementKinds?elementKinds[name]:speciesNames.indexOf(name)%6;
-root.querySelector('[data-note]').textContent=data.note+(speciesNames.length>1?' Species: '+speciesNames.map(name=>name+' ('+speciesColors[kindOf(name)]+')').join(', ')+'.':'');
-let state=data.live?'Running':'',pendingDraw=0;
-const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('button'),slider=root.querySelector('input'),label=root.querySelector('output');
+const note=root.querySelector('[data-note]'),help=root.querySelector('[data-help]');
+note.textContent=data.note+(speciesNames.length>1?' Species: '+speciesNames.map(name=>name+' ('+speciesColors[kindOf(name)]+')').join(', ')+'.':'');
+help.onclick=()=>{note.hidden=!note.hidden;help.setAttribute('aria-expanded',String(!note.hidden));};
+// Species colour chips next to the readout; omovi may replace the colours.
+const legend=root.querySelector('[data-legend]');
+function showLegend(colorOf){
+  legend.innerHTML=speciesNames.length>1?speciesNames.map(name=>'<span class="md-chip" style="--c:rgb('+colorOf(name).join(',')+')">'+escapeHTML(name)+'</span>').join(''):'';
+}
+showLegend(name=>PALETTE[kindOf(name)]);
+let pendingDraw=0;
+const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('[data-play]'),slider=root.querySelector('input'),label=root.querySelector('output');
+const count=root.querySelector('[data-count]'),speedButton=root.querySelector('[data-speed]');
+const status=root.querySelector('[data-status]'),statusText=root.querySelector('[data-status-text]');
 const projection=root.querySelector('select');projection.value=data.projection;
-const zoomSlider=root.querySelector('[aria-label="Zoom"]'),zoomLabel=root.querySelector('[data-zoom-value]');
 let omovi=null,disposed=false;
-let zoom=data.zoom;zoomSlider.value=Math.round(100*zoom);zoomLabel.textContent=Math.round(100*zoom)+'%';
-if(data.live){button.hidden=true;slider.hidden=true;canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');}
+let zoom=data.zoom;
+if(data.live){
+  root.querySelector('[data-playback]').hidden=true;
+  button.hidden=slider.hidden=count.hidden=speedButton.hidden=true;status.hidden=false;
+  canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');
+}
 slider.max=frames.length-1;const extent=Math.max(...frames.flatMap(f=>f.box));
 function normalize(p,box){return p.map((v,d)=>(v-.5*box[d])/extent+.5);}
 const pointers=new Map();
 let pan=[0,0],timer=null;
 const cy=Math.cos(.35),sy=Math.sin(.35),cp=Math.cos(.3),sp=Math.sin(.3);
 const initial=[[cy,0,-sy],[-sy*sp,cp,-cy*sp],[sy*cp,sp,cy*cp]];
-let rotation=initial.map(row=>row.slice());
+// Orthographic views open face-on to the xz plane with z up, or with z across
+// for a box elongated along z (a slab). Rows: screen right, screen up, towards viewer.
+function frontView(){
+  const b=frames[+slider.value].box;
+  return b[2]===Math.max(...b)&&b[2]>1.5*Math.min(...b)?[[0,0,1],[1,0,0],[0,1,0]]:[[1,0,0],[0,0,1],[0,-1,0]];
+}
+function homeView(){return (projection.value==='orthographic'?frontView():initial).map(row=>row.slice());}
+let rotation=homeView();
 // Apply camera-axis rotations, so the near face follows the pointer at any orientation.
 function rotateView(dx,dy){
   const cY=Math.cos(dx),sY=Math.sin(dx),cX=Math.cos(dy),sX=Math.sin(dy);
@@ -85,13 +173,29 @@ kinds:positions.map((_,i)=>speciesNames.length>0?kindOf(data.species[i]):(data.m
 updateLabel(f);}
 function updateLabel(f){
   const u=data.units;
-  label.textContent=(state?state+' · ':'')+'Step '+f.step+(u?' · t '+(f.time*u.time_scale).toFixed(2)+' '+u.time:' · t* '+f.time.toFixed(2))
+  if(!data.live)count.textContent=(+slider.value+1)+' / '+frames.length;
+  label.textContent='Step '+f.step+(u?' · t '+(f.time*u.time_scale).toFixed(2)+' '+u.time:' · t* '+f.time.toFixed(2))
     +(data.live?(u?' · T '+f.temperature.toFixed(1)+' '+u.temperature:' · T* '+f.temperature.toFixed(3))
       +(Number.isFinite(f.pressure)?(u?' · P '+f.pressure.toPrecision(4)+' '+u.pressure:' · P* '+f.pressure.toPrecision(4)):''):'');
 }
-function stop(){clearInterval(timer);timer=null;button.textContent='Play';}
-function togglePlay(){if(timer){stop();return;}button.textContent='Pause';timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100);}
+function showPlaying(playing){
+  const name=playing?'Pause':'Play';
+  button.innerHTML=playing?ICONS.pause:ICONS.play;button.setAttribute('aria-label',name);button.title=name+' (space)';
+}
+function stop(){clearInterval(timer);timer=null;showPlaying(false);}
+// 10 frames per second at 1x.
+const speeds=[.5,1,2,4];let speed=1;
+function start(){
+  clearInterval(timer);showPlaying(true);
+  timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100/speed);
+}
+function togglePlay(){if(timer)stop();else start();}
 button.onclick=togglePlay;
+speedButton.onclick=()=>{speed=speeds[(speeds.indexOf(speed)+1)%speeds.length];speedButton.textContent=speed+'\u00d7';if(timer)start();};
+function setStatus(value){
+  statusText.textContent=value.charAt(0).toUpperCase()+value.slice(1);status.dataset.state=value;
+}
+if(data.live)setStatus('running');
 // Space plays and pauses a focused saved view; live views have no playback.
 function playKey(e){
   if(e.key!==' '||data.live)return false;
@@ -99,6 +203,7 @@ function playKey(e){
   return true;
 }
 projection.onchange=()=>{if(omovi)omovi.setProjection(projection.value);draw();};slider.oninput=draw;
+slider.onkeydown=playKey;
 canvas.onpointerdown=e=>{
   if(e.button!==0&&e.button!==2)return;
   e.preventDefault();canvas.setPointerCapture(e.pointerId);
@@ -122,12 +227,11 @@ canvas.onpointermove=e=>{
 };
 canvas.onpointerup=canvas.onpointercancel=canvas.onlostpointercapture=e=>pointers.delete(e.pointerId);
 canvas.oncontextmenu=e=>e.preventDefault();
-function setZoom(value){zoom=Math.max(.25,Math.min(3,value));zoomSlider.value=Math.round(100*zoom);zoomLabel.textContent=Math.round(100*zoom)+'%';draw();}
-zoomSlider.oninput=()=>setZoom(+zoomSlider.value/100);
+function setZoom(value){zoom=Math.max(.25,Math.min(3,value));draw();}
 root.querySelector('[data-zoom-out]').onclick=()=>setZoom(zoom/1.2);
 root.querySelector('[data-zoom-in]').onclick=()=>setZoom(zoom*1.2);
 canvas.addEventListener('wheel',e=>{e.preventDefault();setZoom(zoom*Math.exp(e.deltaY*.001));},{passive:false});
-root.querySelector('[data-reset]').onclick=()=>{rotation=initial.map(row=>row.slice());pan=[0,0];if(omovi)omovi.resetCamera();setZoom(data.zoom);};
+root.querySelector('[data-reset]').onclick=()=>{rotation=homeView();pan=[0,0];if(omovi)omovi.resetCamera();setZoom(data.zoom);};
 canvas.onkeydown=e=>{if(playKey(e))return;const delta={ArrowRight:[.08,0],ArrowLeft:[-.08,0],ArrowDown:[0,.08],ArrowUp:[0,-.08]}[e.key];if(delta){e.preventDefault();rotateView(...delta);draw();}};
 function requestDraw(){
   if(!pendingDraw)pendingDraw=requestAnimationFrame(()=>{pendingDraw=0;draw();});
@@ -173,7 +277,7 @@ function startOmovi([lib,THREE]){
   const lost=canvas.getContext('webgl2')?.getExtension('WEBGL_lose_context');if(lost)lost.loseContext();
   const {types,styles}=atomTypes();
   // omovi looks colours and radii up by particle id (not by type): set them per atom.
-  let smallest=Infinity,mean=0;
+  let smallest=Infinity,largest=0,mean=0;
   // In real units, species named after elements (O, H, ...) use omovi's element
   // colours, as in Atomify; reduced-unit labels such as "B" are not boron.
   const element=i=>data.units&&speciesNames.length>0?lib.AtomTypes?.[data.species[i]]:null;
@@ -181,7 +285,7 @@ function startOmovi([lib,THREE]){
     const style=styles.get(t),own=element(i)?.color;
     visualizer.setColor(i,own||{r:style.color[0],g:style.color[1],b:style.color[2]});
     visualizer.setRadius(i,style.radius);
-    smallest=Math.min(smallest,style.radius);mean+=style.radius/types.length;
+    smallest=Math.min(smallest,style.radius);largest=Math.max(largest,style.radius);mean+=style.radius/types.length;
   });
   const first=frames[+slider.value];
   // omovi puts its point light half a box diagonal from the centre, which suits
@@ -232,7 +336,12 @@ function startOmovi([lib,THREE]){
   function resetCamera(){
     const lengths=frames[+slider.value].box,longest=lengths.indexOf(Math.max(...lengths));
     let direction=initial[2];
-    if(Math.max(...lengths)>1.5*Math.min(...lengths)){
+    if(projection.value==='orthographic'){
+      // Straight along y is the pole of omovi's y-up orbit: step off it by a hair,
+      // on the side that makes the front view's up direction point up on screen.
+      const [,up,toward]=frontView();
+      direction=toward.map((v,i)=>v-1e-6*Math.sign(toward[1])*up[i]);
+    }else if(Math.max(...lengths)>1.5*Math.min(...lengths)){
       // Elongated box, such as a slab with vacuum: look across the long axis.
       direction=longest===2?[1,.35,0]:[0,.35,1];
       const norm=Math.hypot(...direction);direction=direction.map(v=>v/norm);
@@ -253,11 +362,18 @@ function startOmovi([lib,THREE]){
     fitOrthographic();
   }
   // omovi's orthographic frustum is half the camera distance high, far closer than the
-  // perspective view: match the perspective scale at the centre of the box instead.
+  // perspective view: fit the box corners instead, with the same margin and zoom.
   function fitOrthographic(){
     if(visualizer.camera!==visualizer.orthographicCamera)return;
-    const camera=visualizer.orthographicCamera,perspective=visualizer.perspectiveCamera;
-    const half=visualizer.getCameraPosition().distanceTo(visualizer.getCameraTarget())*Math.tan(Math.PI*perspective.fov/360)/perspective.zoom;
+    const camera=visualizer.orthographicCamera;camera.updateMatrixWorld();
+    const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0);
+    const up=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,1);
+    const lengths=frames[+slider.value].box;let across=0,high=0;
+    for(let c=0;c<8;c++){
+      const corner=new THREE.Vector3(...lengths.map((v,d)=>(((c>>d)&1)-.5)*v));
+      across=Math.max(across,Math.abs(corner.dot(right)));high=Math.max(high,Math.abs(corner.dot(up)));
+    }
+    const half=1.05*Math.max(high+largest,(across+largest)/aspect())/(data.zoom||1);  // atoms on the faces stick out
     Object.assign(camera,{top:half,bottom:-half,left:-half*aspect(),right:half*aspect(),zoom:1});
     camera.updateProjectionMatrix();
     visualizer.forceRender=true;
@@ -292,9 +408,10 @@ function startOmovi([lib,THREE]){
   }):null;
   if(visibility)visibility.observe(container);
   omovi={show,setProjection,resetCamera,dispose(){if(visibility)visibility.disconnect();theme?.removeEventListener('change',matchPage);visualizer.dispose();}};
-  root.querySelector('[aria-label="Zoom"]').closest('label').style.display='none';  // omovi zooms with the wheel
+  root.querySelector('[data-zoom-out]').hidden=root.querySelector('[data-zoom-in]').hidden=true;  // omovi zooms with the wheel
+  showLegend(name=>{const c=data.units?lib.AtomTypes?.[name]?.color:null;return c?[c.r,c.g,c.b]:PALETTE[kindOf(name)];});
   resetCamera();setProjection(projection.value);draw();
-  const note=root.querySelector('[data-note]');note.textContent+=' Rendered with OMOVI.';
+  note.textContent+=' Rendered with OMOVI.';
 }
 if(data.renderer!=='basic'){
   const fallback=error=>console.warn('OMOVI unavailable; using the built-in renderer.',error);
@@ -305,7 +422,7 @@ return {
     frames[0]=frame;
     requestDraw();
   },
-  setStatus(status){state=status.charAt(0).toUpperCase()+status.slice(1);updateLabel(frames[0]);},
+  setStatus,
   dispose(){disposed=true;stop();if(omovi)omovi.dispose();else renderer.dispose();resizeObserver.disconnect();resolution.removeEventListener('change',watchResolution);if(pendingDraw)cancelAnimationFrame(pendingDraw);}
 };
 }
