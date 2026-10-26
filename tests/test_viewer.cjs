@@ -83,7 +83,11 @@ assert.equal(controls.get('[data-count]').textContent,'1 / 2');
 canvas.onkeydown(key(' '));assert.equal(play(),'Pause');
 canvas.onkeydown(key(' ',true));assert.equal(play(),'Pause');
 canvas.onkeydown(key(' '));assert.equal(play(),'Play');
-controls.get('[data-speed]').onclick();assert.equal(controls.get('[data-speed]').textContent,'2\u00d7');
+const speed=controls.get('[data-speed]');
+speed.options=['.25','.5','1','2','4','8'].map(value=>({value}));speed.value='1';
+canvas.onkeydown(key('>'));assert.equal(speed.value,'2');
+canvas.onkeydown(key('<'));canvas.onkeydown(key('<'));assert.equal(speed.value,'.5');
+speed.value='8';canvas.onkeydown(key('>'));assert.equal(speed.value,'8');  // stays at the fastest
 saved.dispose();
 // Live views show a run status instead of playback.
 const live=sandbox.createMDView(host,{frames:[frame],projection:'orthographic',zoom:1,live:true,note:''});

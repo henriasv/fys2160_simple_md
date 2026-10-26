@@ -78,11 +78,11 @@ const VIEW_MARKUP=`<style>${VIEW_STYLE}</style>
 <span class="md-status" data-status hidden><span class="md-dot"></span><span data-status-text></span></span>
 <output></output><span class="md-legend" data-legend></span>
 <span class="md-tools">
-<button type="button" class="md-btn" data-speed aria-label="Playback speed" title="Playback speed">1×</button>
+<select data-speed aria-label="Playback speed" title="Playback speed (&lt; and &gt; keys)"><option value=".25">0.25\u00d7</option><option value=".5">0.5\u00d7</option><option value="1" selected>1\u00d7</option><option value="2">2\u00d7</option><option value="4">4\u00d7</option><option value="8">8\u00d7</option></select>
 <button type="button" class="md-btn" data-zoom-out aria-label="Zoom out" title="Zoom out">−</button>
 <button type="button" class="md-btn" data-zoom-in aria-label="Zoom in" title="Zoom in">+</button>
 <button type="button" class="md-btn" data-reset aria-label="Reset view" title="Reset view">${ICONS.reset}</button>
-<select aria-label="Projection" title="Projection"><option value="perspective">Perspective</option><option value="orthographic">Orthographic</option></select>
+<select data-projection aria-label="Projection" title="Projection"><option value="perspective">Perspective</option><option value="orthographic">Orthographic</option></select>
 <button type="button" class="md-btn" data-help aria-label="Controls and details" aria-expanded="false" title="Controls and details">?</button>
 </span>
 </div>
@@ -113,14 +113,14 @@ function showLegend(colorOf){
 showLegend(name=>PALETTE[kindOf(name)]);
 let pendingDraw=0;
 const canvas=root.querySelector('canvas'),renderer=createMDSphereRenderer(canvas),button=root.querySelector('[data-play]'),slider=root.querySelector('input'),label=root.querySelector('output');
-const count=root.querySelector('[data-count]'),speedButton=root.querySelector('[data-speed]');
+const count=root.querySelector('[data-count]'),speedSelect=root.querySelector('[data-speed]');
 const status=root.querySelector('[data-status]'),statusText=root.querySelector('[data-status-text]');
-const projection=root.querySelector('select');projection.value=data.projection;
+const projection=root.querySelector('[data-projection]');projection.value=data.projection;
 let omovi=null,disposed=false;
 let zoom=data.zoom;
 if(data.live){
   root.querySelector('[data-playback]').hidden=true;
-  button.hidden=slider.hidden=count.hidden=speedButton.hidden=true;status.hidden=false;
+  button.hidden=slider.hidden=count.hidden=speedSelect.hidden=true;status.hidden=false;
   canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');
 }
 slider.max=frames.length-1;const extent=Math.max(...frames.flatMap(f=>f.box));
@@ -184,21 +184,29 @@ function showPlaying(playing){
 }
 function stop(){clearInterval(timer);timer=null;showPlaying(false);}
 // 10 frames per second at 1x.
-const speeds=[.5,1,2,4];let speed=1;
+let speed=1;
 function start(){
   clearInterval(timer);showPlaying(true);
   timer=setInterval(()=>{if(!root.isConnected){stop();return;}slider.value=(+slider.value+1)%frames.length;draw();},100/speed);
 }
 function togglePlay(){if(timer)stop();else start();}
 button.onclick=togglePlay;
-speedButton.onclick=()=>{speed=speeds[(speeds.indexOf(speed)+1)%speeds.length];speedButton.textContent=speed+'\u00d7';if(timer)start();};
+speedSelect.onchange=()=>{speed=+speedSelect.value;if(timer)start();};
+// < and > step the playback speed down and up, as in video players.
+function stepSpeed(step){
+  const values=[...speedSelect.options].map(o=>o.value),i=values.indexOf(speedSelect.value)+step;
+  if(i>=0&&i<values.length){speedSelect.value=values[i];speedSelect.onchange();}
+}
 function setStatus(value){
   statusText.textContent=value.charAt(0).toUpperCase()+value.slice(1);status.dataset.state=value;
 }
 if(data.live)setStatus('running');
-// Space plays and pauses a focused saved view; live views have no playback.
+// In a focused saved view, space plays and pauses and < > change the speed; live
+// views have no playback.
 function playKey(e){
-  if(e.key!==' '||data.live)return false;
+  if(data.live)return false;
+  if(e.key==='<'||e.key==='>'){e.preventDefault();stepSpeed(e.key==='>'?1:-1);return true;}
+  if(e.key!==' ')return false;
   e.preventDefault();if(!e.repeat)togglePlay();
   return true;
 }

@@ -190,3 +190,7 @@ when its element has no height. Now the container is in the page before the
 Visualizer is built, the omovi canvas fills the container, and a ResizeObserver,
 show() and pointer input wake the loop for two frames even while paused. Verified
 with an observer that always reports "not visible".
+
+2026-10-26 (0.2.6): playback speed is a menu (0.25x to 8x of 10 frames/s) instead
+of a cycling button, and < > step it in a focused saved view. The projection menu
+is found by [data-projection], since it is no longer the only select.

@@ -130,7 +130,8 @@ rotate a focused canvas, and space plays and pauses a saved trajectory.
 Two-finger scrolling zooms, with positive scroll zooming in; the built-in
 renderer also has zoom buttons. `view(zoom=1.5)` sets the initial magnification.
 Below the view, a control bar holds play/pause, the frame slider and counter,
-playback speed, reset view, the projection and a **?** button that shows these
+a playback speed menu (0.25× to 8× of 10 frames per second; also the < and >
+keys), reset view, the projection and a **?** button that shows these
 notes. A live view shows the run status instead. Reset view restores pan and zoom
 and the starting direction: a slightly angled view in perspective, and a face-on
 view of the xz plane (z up) in orthographic projection. For a box elongated along

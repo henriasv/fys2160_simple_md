@@ -139,7 +139,7 @@ updates limited to 20 fps. Slow calculations may run below a requested cap.
 Only the latest snapshot is sent; at most 3000 atoms (whole molecules) are shown.
 
 - One-finger click-drag rotates; two-finger click-drag / Shift-drag pans.
-- Two-finger scrolling zooms. The control bar shows the run status, reset view, the projection and a **?** button for details; saved views add play/pause (also the space key), a frame slider and playback speed.
+- Two-finger scrolling zooms. The control bar shows the run status, reset view, the projection and a **?** button for details; saved views add play/pause (also the space key), a frame slider and a playback speed menu from 0.25× to 8× of 10 frames per second (also the < and > keys).
 - Perspective and orthographic views use sphere-surface depth for correct overlaps.
 - LJ particle radius is 0.5σ; gravity uses display markers of radius 0.035. Reset restores pan, rotation and zoom.
 
