@@ -270,9 +270,12 @@ function startOmovi([lib,THREE]){
   container.tabIndex=0;
   container.addEventListener('pointerdown',()=>container.focus({preventScroll:true}),true);
   container.addEventListener('keydown',playKey);
+  canvas.replaceWith(container);  // in the page first: omovi measures its element
   const visualizer=new lib.Visualizer({domElement:container});
   container.omovi=visualizer;container.omoviLibrary=lib;  // for inspection from the browser console
-  canvas.replaceWith(container);
+  // omovi gives its canvas a 640x480 CSS size within percentage limits, and measures
+  // that canvas when the element has no size yet; fill the view instead.
+  visualizer.canvas.style.cssText='display:block;width:100%;height:100%';
   renderer.dispose();
   const lost=canvas.getContext('webgl2')?.getExtension('WEBGL_lose_context');if(lost)lost.loseContext();
   const {types,styles}=atomTypes();
@@ -396,18 +399,29 @@ function startOmovi([lib,THREE]){
     }}
     box.geometry.attributes.position.needsUpdate=true;
     visualizer.forceRender=true;
+    wake();
   }
   function setProjection(value){
     visualizer.setOrthographic(value==='orthographic');
     fitOrthographic();
     visualizer.setSSAO(value!=='orthographic');  // omovi's ambient occlusion needs the perspective camera
   }
-  // Pause rendering while the view is scrolled out of sight.
+  // Pause rendering while the view is scrolled out of sight. omovi only resizes while
+  // rendering, so a resize, a new frame or pointer input renders a few frames anyway,
+  // in case the visibility report is late or missing (a stale image is stretched).
+  let visible=true;
   const visibility=typeof IntersectionObserver==='function'?new IntersectionObserver(entries=>{
-    for(const entry of entries)visualizer.idle=!entry.isIntersecting;
+    for(const entry of entries){visible=entry.isIntersecting;visualizer.idle=!visible;}
   }):null;
   if(visibility)visibility.observe(container);
-  omovi={show,setProjection,resetCamera,dispose(){if(visibility)visibility.disconnect();theme?.removeEventListener('change',matchPage);visualizer.dispose();}};
+  function wake(){
+    if(!visualizer.idle)return;
+    visualizer.idle=false;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{visualizer.idle=!visible;}));
+  }
+  const resized=new ResizeObserver(wake);resized.observe(container);
+  for(const name of ['pointerdown','pointermove','wheel'])container.addEventListener(name,wake,{passive:true});
+  omovi={show,setProjection,resetCamera,dispose(){if(visibility)visibility.disconnect();resized.disconnect();theme?.removeEventListener('change',matchPage);visualizer.dispose();}};
   root.querySelector('[data-zoom-out]').hidden=root.querySelector('[data-zoom-in]').hidden=true;  // omovi zooms with the wheel
   showLegend(name=>{const c=data.units?lib.AtomTypes?.[name]?.color:null;return c?[c.r,c.g,c.b]:PALETTE[kindOf(name)];});
   resetCamera();setProjection(projection.value);draw();

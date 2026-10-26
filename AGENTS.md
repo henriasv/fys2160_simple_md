@@ -182,3 +182,11 @@ root colour now inherits. The orthographic OMOVI frustum fits the box corners pl
 the largest atom radius. Reset (and the initial view) is the angled view in
 perspective and face-on to the xz plane (z up; z across for z-elongated boxes) in
 orthographic. omovi's orbit controls are y-up, so the camera sits 1e-6 off the pole.
+
+2026-10-26 (0.2.5): a stretched OMOVI view was reported on the desktop docs page
+(not reproduced here). omovi resizes only inside its render loop, which the
+IntersectionObserver pause stops, and it falls back to its canvas's 640x480 CSS size
+when its element has no height. Now the container is in the page before the
+Visualizer is built, the omovi canvas fills the container, and a ResizeObserver,
+show() and pointer input wake the loop for two frames even while paused. Verified
+with an observer that always reports "not visible".
