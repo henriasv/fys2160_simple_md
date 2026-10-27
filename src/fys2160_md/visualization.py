@@ -70,7 +70,7 @@ class LiveView:
     def visible(sim):
         return min(len(sim._x), _visible_atoms(3000, 3 if sim.model == 'water-rigid' else 1))
 
-    def start(self, sim):
+    def start(self, sim, steps=0):
         from IPython.display import display
         shown = self.visible(sim)
         note = (f'Live 3D · showing {shown} of {len(sim._x)} atoms. '
@@ -79,6 +79,8 @@ class LiveView:
                  if self.max_fps is not None else 'Full simulation speed; display updates capped at 20 fps.')
         species = sim.system._species[:shown].tolist()
         sigma, extra = _display(dict(model=sim.model, pair_potential=sim.pair_potential, sigma=sim.sigma, units=sim.units), species, None)
+        # Where the run ends, so that the readout can keep a fixed width.
+        extra.update(final_step=sim.step+steps, final_time=sim.time+steps*sim.settings['timestep'])
         self.widget = self.widget_type(
             configuration=dict(projection='perspective', zoom=1., boundary=sim.system.boundary, sigma=sigma, species=species, molecular=sim.model!='atomic', note=note, **extra),
             frame=self.snapshot(sim))

@@ -56,7 +56,7 @@ const VIEW_STYLE=`
 [data-md-view] .md-legend{display:flex;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--md-muted)}
 [data-md-view] .md-chip{display:inline-flex;align-items:center;gap:5px}
 [data-md-view] .md-chip::before{content:"";width:10px;height:10px;border-radius:50%;background:var(--c);box-shadow:inset 0 0 0 1px rgba(0,0,0,.25)}
-[data-md-view] .md-status{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 11px 0 9px;border-radius:15px;background:var(--md-line);font:600 12px system-ui,sans-serif}
+[data-md-view] .md-status{display:inline-flex;align-items:center;gap:7px;height:30px;min-width:9em;box-sizing:border-box;padding:0 11px 0 9px;border-radius:15px;background:var(--md-line);font:600 12px system-ui,sans-serif}
 [data-md-view] .md-dot{width:8px;height:8px;border-radius:50%;background:#8a949c}
 [data-md-view] [data-state=running] .md-dot{background:#3aa76d;animation:md-pulse 1.6s ease-in-out infinite}
 [data-md-view] [data-state=interrupted] .md-dot{background:#d99a2b}
@@ -171,12 +171,21 @@ renderer.draw({positions,edges,bonds,radius:.5*(typeof data.sigma==='number'?dat
 radii:positions.map((_,i)=>.5*(typeof data.sigma==='object'?data.sigma[data.species[i]]:(data.sigma??1))/extent),
 kinds:positions.map((_,i)=>speciesNames.length>0?kindOf(data.species[i]):(data.molecular?i%2:0)),zoom,pan,perspective:projection.value==='perspective',molecular:data.molecular});
 updateLabel(f);}
+// Readout numbers keep the width of their widest value in the run, padded with
+// figure spaces (digit-wide in the monospace readout), so nothing shifts as the
+// step count gains digits. Temperature and pressure can only widen, once.
+const widths={};
+function fixed(name,text){widths[name]=Math.max(widths[name]||0,text.length);return text.padStart(widths[name],'\u2007');}
+const timeText=t=>(data.units?t*data.units.time_scale:t).toFixed(2);
+fixed('frame',String(frames.length));
+fixed('step',String(data.live?data.final_step??frames[0].step:Math.max(...frames.map(f=>f.step))));
+fixed('time',timeText(data.live?data.final_time??frames[0].time:Math.max(...frames.map(f=>f.time))));
 function updateLabel(f){
   const u=data.units;
-  if(!data.live)count.textContent=(+slider.value+1)+' / '+frames.length;
-  label.textContent='Step '+f.step+(u?' · t '+(f.time*u.time_scale).toFixed(2)+' '+u.time:' · t* '+f.time.toFixed(2))
-    +(data.live?(u?' · T '+f.temperature.toFixed(1)+' '+u.temperature:' · T* '+f.temperature.toFixed(3))
-      +(Number.isFinite(f.pressure)?(u?' · P '+f.pressure.toPrecision(4)+' '+u.pressure:' · P* '+f.pressure.toPrecision(4)):''):'');
+  if(!data.live)count.textContent=fixed('frame',String(+slider.value+1))+' / '+frames.length;
+  label.textContent='Step '+fixed('step',String(f.step))+(u?' · t ':' · t* ')+fixed('time',timeText(f.time))+(u?' '+u.time:'')
+    +(data.live?(u?' · T '+fixed('T',f.temperature.toFixed(1))+' '+u.temperature:' · T* '+fixed('T',f.temperature.toFixed(3)))
+      +(Number.isFinite(f.pressure)?(u?' · P '+fixed('P',f.pressure.toPrecision(4))+' '+u.pressure:' · P* '+fixed('P',f.pressure.toPrecision(4))):''):'');
 }
 function showPlaying(playing){
   const name=playing?'Pause':'Play';

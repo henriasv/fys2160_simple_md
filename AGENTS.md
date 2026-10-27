@@ -194,3 +194,10 @@ with an observer that always reports "not visible".
 2026-10-26 (0.2.6): playback speed is a menu (0.25x to 8x of 10 frames/s) instead
 of a cycling button, and < > step it in a focused saved view. The projection menu
 is found by [data-projection], since it is no longer the only select.
+
+2026-10-27 (0.2.7): the view controls keep their layout during playback and live
+runs. Readout numbers (step, time, frame counter) are padded with figure spaces to
+the widest value of the run: saved views use the frame maxima, live views get
+final_step/final_time from LiveView.start(sim, steps). Live T and P can widen only
+(at most a few times). The status pill has a fixed minimum width; both menus
+already size to their widest option.

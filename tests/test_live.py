@@ -31,7 +31,7 @@ class RecordingView(LiveView):
         self.last_step = None
         self.__class__.instances.append(self)
 
-    def start(self, sim):
+    def start(self, sim, steps=0):
         from fys2160_md.visualization import time
         self.widget = SimpleNamespace(frame=self.snapshot(sim), status='running')
         self.last_step = sim.step

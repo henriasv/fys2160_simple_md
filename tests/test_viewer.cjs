@@ -89,6 +89,11 @@ canvas.onkeydown(key('>'));assert.equal(speed.value,'2');
 canvas.onkeydown(key('<'));canvas.onkeydown(key('<'));assert.equal(speed.value,'.5');
 speed.value='8';canvas.onkeydown(key('>'));assert.equal(speed.value,'8');  // stays at the fastest
 saved.dispose();
+// The readout keeps its width as the step count gains digits.
+const growing=sandbox.createMDView(host,{frames:[frame,{...frame,step:12000,time:60}],projection:'orthographic',zoom:1,note:''});
+const early=controls.get('output').textContent;controls.get('input').value=1;controls.get('input').oninput();
+assert.equal(controls.get('output').textContent.length,early.length);assert.ok(early.startsWith('Step \u2007\u2007\u2007\u20070'));
+controls.get('input').value=0;growing.dispose();
 // Live views show a run status instead of playback.
 const live=sandbox.createMDView(host,{frames:[frame],projection:'orthographic',zoom:1,live:true,note:''});
 assert.equal(controls.get('[data-status]').hidden,false);assert.equal(controls.get('[data-play]').hidden,true);

@@ -278,7 +278,7 @@ class MDSimulation:
             last_frame = engine.step
         try:
             if live:
-                live.start(engine)
+                live.start(engine, steps)
             with (path/'thermo.csv').open('w', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=list(engine.observables))
                 writer.writeheader()
