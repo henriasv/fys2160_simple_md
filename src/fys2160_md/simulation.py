@@ -520,7 +520,7 @@ class _Engine:
         self._v[::2] -= correction/self._mass[::2, None]
         self._v[1::2] += correction/self._mass[1::2, None]
 
-    def _advance(self, steps):
+    def _advance(self, steps, measure=False):
         c = self.settings
         sim = self.sim
         if sim.pair_potential == 'gravity':
@@ -535,13 +535,16 @@ class _Engine:
             return bool(interrupted)
         if self.kind == 'molecular':
             return self._advance_molecular(steps)
+        # The pressure of molecules costs a pass over the pairs, so it waits until it is read.
+        measure = measure or self.model == 'atomic'
         result = _core.advance(self._x, self._v, self._u, self._f, self._box,
             self._mass, steps, c['timestep'], self.cutoff, self.skin,
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
-            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace)
-        self._potential, self._virial, self._rng, done, interrupted, self._rate, self._pressure_numerator = result
+            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace, int(measure))
+        self._potential, self._virial, self._rng, done, interrupted, self._rate, numerator = result
+        self._pressure_numerator = numerator if measure else None
         self.step += done
         self.time += done*c['timestep']
         self.heat_added += done*c['timestep']*c['heat_rate']
@@ -578,6 +581,8 @@ class _Engine:
 
     @property
     def observables(self):
+        if self._pressure_numerator is None:
+            self._advance(0, measure=True)
         U = self._units
         K = float(.5*np.sum(self._mass[:,None]*self._v**2))*U.mvv2e
         V = float(np.prod(self._box))

@@ -434,12 +434,12 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     Py_buffer buffers[6] = {{0}};
     int requested, done = 0, interrupted = 0;
     double dt, cutoff, skin, T, gamma, heat, targetP, baromass, rate, potential=0, virial=0;
-    int model, pair=-1, exclude=1;
+    int model, pair=-1, exclude=1, measure=1;
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOO", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOi", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure)) return NULL;
     if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
@@ -596,7 +596,8 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_Clear(); interrupted=1; break;
         }
     }
-    pressure_numerator=model?molecular_pressure_numerator(nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):2*kinetic(n,v,mass)+virial;
+    /* The molecular pressure takes a pass over the pairs; measure=0 leaves it for a later call of zero steps. */
+    pressure_numerator=!model?2*kinetic(n,v,mass)+virial:measure?molecular_pressure_numerator(nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):NAN;
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
     if(result&&ws!=&local)remember(ws,n,x,u,f,box,scalars,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
 
