@@ -26,6 +26,16 @@ This repository contains the standalone course MD package. Python import:
   with an unchanged version as already satisfied, even at a new pinned commit.
 - Before publishing docs, build with `python scripts/build_docs.py --execute`
   then `python -m mkdocs build --strict` and check the static trajectory players.
+- Releases: `.github/workflows/wheels.yml` builds and tests wheels for Windows,
+  macOS, Linux and Pyodide with cibuildwheel (settings under `[tool.cibuildwheel]`
+  in `pyproject.toml`) and publishes to PyPI only for a pushed tag `vX.Y.Z` that
+  matches `_version.py`.
+- `import fys2160_md` must not import pandas, matplotlib, IPython or anywidget: the
+  browser build has no pandas. `tests/test_imports.py` checks this; the test suite
+  itself needs pandas and IPython.
+- The C sources stay strict C99 without variable-length arrays, `complex.h`, `M_PI`
+  or compiler extensions (MSVC), and must not assume a 64-bit `long` or `size_t`
+  (Windows, WebAssembly).
 
 The public examples must be independent demonstrations, never course lab
 solutions. Private teaching materials and historical lab notebooks remain in
@@ -201,3 +211,25 @@ the widest value of the run: saved views use the frame maxima, live views get
 final_step/final_time from LiveView.start(sim, steps). Live T and P can widen only
 (at most a few times). The status pill has a fixed minimum width; both menus
 already size to their widest option.
+
+2026-11-19 (0.2.8, branch claude/wheels-and-optional-pandas-5e75f6): packaging for
+PyPI and the browser. pandas is imported inside `Run.thermo` (clear ImportError with
+the numpy alternative when missing) and is a dependency everywhere except Emscripten
+(`sys_platform != 'emscripten'`). `wheels.yml` has four jobs: native wheels on six
+hosted runners (cp310-cp315; no win32, no free-threaded, no cp310 on Windows arm64,
+which follow from where numpy and pandas publish wheels), the Pyodide wheel
+(cp314, pyemscripten_2026_0_wasm32) plus `tests/pyodide_smoke.mjs` under Node with
+Pyodide 314.0.8 and no pandas, an sdist, and trusted publishing for a version tag or a
+manual run with "publish" ticked. Wheels no longer carry the C sources; the sdist
+carries the tests and golden fixture. C audit for MSVC and wasm32: no source change
+was needed except a guard in `pppm_init` against a mesh size that overflows a 32-bit
+`size_t`; all six `PyMethodDef` entries match their flags. `viewer.js` is read as
+UTF-8 (Windows would otherwise garble its non-ASCII labels).
+Verified on this Mac only: native wheel, 64 tests (numpy 2.5.5, pandas 3.1.1,
+Python 3.14); the Pyodide job run locally through cibuildwheel 4.3.5 (63 tests pass
+in Pyodide, one skipped that needs a subprocess); the smoke script. The Windows and
+Linux jobs and the publish job have never run. Golden trajectories differ from the
+frozen ones by up to 2.4e-12 in Pyodide against a tolerance of 1e-11, so a platform
+with another math library (MSVC, musl) may need a looser tolerance. The extension
+already compiles unchanged against `Py_LIMITED_API=0x030B0000`, so `cp311-abi3`
+wheels need only build settings; not done. The repository has no LICENSE file.
