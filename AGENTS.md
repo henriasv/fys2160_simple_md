@@ -341,3 +341,18 @@ scenes use `friction=0.05`.
 thermophysics-interactive-book, and `page_numbers.py`, which prints what they show.
 `scripts/validate_walls.py` prints the validation numbers of `docs/walls.md`;
 `scripts/pyodide_week34.mjs WHEEL` runs the scenes in Pyodide under Node.
+
+Measured (Apple M5 Pro, 8 starting states, `scripts/validate_walls.py`): energy between
+walls changes by 1 to 2 parts in 10 000 of the kinetic energy over 1000 time units;
+PV/NkT from the force on all four walls 1.015, 1.020, 1.005, 1.010 against 1.009,
+1.019, 1.005, 1.005 expected from the second virial coefficient; one 2000-time-unit
+mean of the force on one wall scatters by 1.5 to 3.5% (about one hit per time unit);
+piston 100 -> 50 at speed 0.05: T ratio 2.03 +- 0.02, |change of energy - work| at most
+0.13 of 426. 200 atoms in 100 x 100 run at 147 000 steps per second with the thermostat
+and 360 000 without (native); the week 34 scenes take 2.9 s (wall force, 420 000 steps)
+and 0.6 s (piston) natively, 4.7 s and 0.9 s in Pyodide 314.0.8 under Node. Native and
+browser trajectories differ (rounding in the last digit, chaotic motion); their
+averages agree. 91 Python tests and the viewer checks pass; the Pyodide smoke test now
+also runs a piston. Thermostat noise is one sequence per `seed`: runs that should be
+independent need different seeds (`sim.start(state, seed=...)`), not only different
+starting positions.
