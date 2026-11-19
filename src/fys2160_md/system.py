@@ -208,11 +208,26 @@ class System:
 
     def copy(self):
         """Independent copy of the complete state."""
-        other=System(self._x,self._box,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units,
+        return self._copy(self._v)
+
+    def _copy(self, velocities):
+        other=System(self._x,self._box,velocities=velocities,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units,
                      unwrapped=self._u,time=self._time,step=self._step)
         other._rng,other._rate,other._heat=self._rng,self._rate,self._heat
         other._pppm=None if self._pppm is None else (self._pppm[0].copy(),)+tuple(self._pppm[1:])
         return other
+
+    def with_velocities(self, velocities):
+        """Copy of this state with other velocities, one row per atom.
+
+        ``state.with_velocities(-state.atoms.velocities)`` runs the motion
+        backwards; changing one atom's row perturbs it. Positions, box, masses
+        and the clock are kept. The total momentum must stay zero for a run, and
+        velocities along a rigid bond are rejected.
+        """
+        if velocities is None:
+            raise ValueError('velocities must be a finite (N,3) array, one row per atom.')
+        return self._copy(velocities)
 
     def with_box(self, box):
         """Copy of this state in a larger periodic box, with the contents centred.
