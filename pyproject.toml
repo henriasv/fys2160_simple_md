@@ -8,7 +8,8 @@ dynamic = ["version"]
 description = "A small native molecular-dynamics solver with a notebook interface"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "pandas>=2.0"]
+# The browser (Pyodide) build leaves pandas out: only Run.thermo needs it.
+dependencies = ["numpy>=1.24", "pandas>=2.0; sys_platform != 'emscripten'"]
 
 [project.optional-dependencies]
 notebook = ["anywidget>=0.9,<1", "ipython>=8", "matplotlib>=3.7", "nbformat>=5", "nbclient>=0.9", "ipykernel>=6"]
