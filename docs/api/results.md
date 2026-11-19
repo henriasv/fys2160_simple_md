@@ -89,7 +89,9 @@ plt.show()
 ```
 
 `thermo` is a pandas DataFrame: read columns, calculate means and use ordinary
-NumPy, pandas and Matplotlib tools for your analysis.
+NumPy, pandas and Matplotlib tools for your analysis. pandas is loaded the first
+time `thermo` is read. The browser build does not install it; see
+[In the browser](../installation.md#in-the-browser).
 
 
 For an isolated gravity run, `view(particle_radius=0.035)` sets a display-only

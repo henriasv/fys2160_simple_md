@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 import numpy as np
-import pandas as pd
+
+if TYPE_CHECKING:  # pandas is loaded only when Run.thermo is read.
+    import pandas as pd
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -59,6 +62,13 @@ class Run:
     @property
     def thermo(self) -> pd.DataFrame:
         """Recorded observables for the whole system, in the run's units (see metadata['units'])."""
+        try:
+            import pandas as pd
+        except ImportError as exc:
+            raise ImportError(
+                'Run.thermo returns a pandas DataFrame, and pandas is not installed. Install pandas '
+                '(in a browser page: await micropip.install("pandas")), or read the same table with '
+                "numpy.genfromtxt(run.path/'thermo.csv', delimiter=',', names=True).") from exc
         return pd.read_csv(self.path / 'thermo.csv')
 
     def iter_frames(self):
