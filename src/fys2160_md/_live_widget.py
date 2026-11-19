@@ -5,7 +5,7 @@ import traitlets
 
 
 class MDWidget(anywidget.AnyWidget):
-    _esm = Path(__file__).with_name('viewer.js').read_text() + '''
+    _esm = Path(__file__).with_name('viewer.js').read_text(encoding='utf-8') + '''
 function render({model,el}) {
   const view=createMDView(el,{...model.get('configuration'),frames:[model.get('frame')],live:true});
   const frameChanged=()=>view.setFrame(model.get('frame'));

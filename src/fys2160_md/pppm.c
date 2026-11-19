@@ -3,6 +3,7 @@
    documentation so meshes and splitting parameters agree for cross-checks. */
 #include "pppm.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -94,6 +95,8 @@ int pppm_init(PPPM *p, const int mesh[3], double g, int order, int sites) {
     for (int d = 0; d < 3; ++d) {
         if (mesh[d] < 2 || !fft_factorable(mesh[d])) return -1;
         p->n[d] = mesh[d];
+        /* The meshes hold 2*points doubles; size_t is 32-bit in WebAssembly. */
+        if (points > SIZE_MAX/(2*sizeof(double))/(size_t)mesh[d]) { pppm_free(p); return -1; }
         points *= (size_t)mesh[d];
         p->k[d] = malloc((size_t)mesh[d]*sizeof(double));
         if (!p->k[d]) { pppm_free(p); return -1; }
