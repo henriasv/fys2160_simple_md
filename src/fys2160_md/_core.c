@@ -17,11 +17,12 @@ typedef struct {
     double *sorted;
     int *cell, *members, *first, first_capacity;
 } Neighbors;
-/* What one run keeps between calls into the solver: the neighbour list, and the
-   arrays and parameters exactly as the previous call left them. A call that
-   finds them bit-for-bit unchanged continues with that list and those forces;
-   any difference (positions, box, cutoff, atom count, pair or bond parameters)
-   makes it start afresh. */
+/* What one run keeps between calls into the solver: the neighbour list, the
+   forces (f, which the solver works in and copies out when it returns), and the
+   positions, box and parameters exactly as the previous call left them. A call
+   that finds them bit-for-bit unchanged continues with that list and those
+   forces; any difference (positions, box, cutoff, atom count, pair or bond
+   parameters) makes it start afresh. */
 #define WORKSPACE_SCALARS 12
 typedef struct {
     Neighbors nb;
@@ -219,16 +220,19 @@ static int unchanged(const Workspace *w, int n, const double *x, const double *u
            same(w->x, x, (size_t)3*n) && (!u || same(w->u, u, (size_t)3*n)) &&
            w->table_size[0] == na && w->table_size[1] == nb && same(w->tables, a, na) && same(w->tables + 2*(size_t)n, b, nb);
 }
-static void remember(Workspace *w, int n, const double *x, const double *u, const double *f, const double *box,
-                     const double *scalars, const double *a, size_t na, const double *b, size_t nb,
+/* tables is 0 when the call began with them unchanged. */
+static void remember(Workspace *w, int n, const double *x, const double *u, const double *box,
+                     const double *scalars, int tables, const double *a, size_t na, const double *b, size_t nb,
                      double potential, double virial) {
     size_t count = (size_t)n * 3 * sizeof(double);
-    memcpy(w->x, x, count); memcpy(w->f, f, count);
+    memcpy(w->x, x, count);
     if (u) memcpy(w->u, u, count);
     memcpy(w->box, box, sizeof w->box); memcpy(w->scalars, scalars, sizeof w->scalars);
-    if (na) memcpy(w->tables, a, na * sizeof(double));
-    if (nb) memcpy(w->tables + 2*(size_t)n, b, nb * sizeof(double));
-    w->table_size[0] = na; w->table_size[1] = nb;
+    if (tables) {
+        if (na) memcpy(w->tables, a, na * sizeof(double));
+        if (nb) memcpy(w->tables + 2*(size_t)n, b, nb * sizeof(double));
+        w->table_size[0] = na; w->table_size[1] = nb;
+    }
     w->potential = potential; w->virial = virial; w->current = 1;
 }
 static void free_workspace(PyObject *capsule) {
@@ -505,7 +509,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_ValueError, "Invalid integrator parameters."); goto cleanup;
     }
     double *x=buffers[0].buf,*v=buffers[1].buf,*u=buffers[2].buf;
-    double *f=buffers[3].buf,*box=buffers[4].buf,*mass=buffers[5].buf;
+    double *f=NULL,*box=buffers[4].buf,*mass=buffers[5].buf;
     for(int d=0;d<3;++d) if (!(box[d]>2*cutoff) || !isfinite(box[d])) {
         PyErr_SetString(PyExc_ValueError, "Each box length must be greater than twice the cutoff.");goto cleanup;
     }
@@ -518,14 +522,13 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     const double scalars[WORKSPACE_SCALARS]={cutoff,skin,model,pair,exclude,epsilon,sigma,length,k2,k3,k4};
     size_t parameter_count=parameters?(size_t)2*n:0, bond_count=bond_parameters&&model?(size_t)2*n:0;
     Neighbors *nb=&ws->nb;
-    if(unchanged(ws,n,x,u,box,scalars,parameters,parameter_count,bond_parameters,bond_count)) {
+    const int continued=unchanged(ws,n,x,u,box,scalars,parameters,parameter_count,bond_parameters,bond_count);
+    ws->current=0;
+    if(continued) {
         /* Continue the previous call: its list and forces still hold, and the
            positions and parameters are the ones it checked. */
-        memcpy(f,ws->f,(size_t)n*3*sizeof(double));
-        potential=ws->potential; virial=ws->virial;
-        ws->current=0;
+        f=ws->f; potential=ws->potential; virial=ws->virial;
     } else {
-        ws->current=0;
         for(int k=0;k<3*n;++k) if(!isfinite(x[k])||!isfinite(u[k])) {
             PyErr_SetString(PyExc_ValueError,"State arrays must be finite.");goto cleanup;
         }
@@ -538,6 +541,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             }
         }
         if(prepare_workspace(ws,n)<0)goto cleanup;
+        f=ws->f;
         if(build_neighbors(nb,n,x,u,box,cutoff+skin,-1)<0 || forces(nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
     }
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
@@ -599,7 +603,10 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     /* The molecular pressure takes a pass over the pairs; measure=0 leaves it for a later call of zero steps. */
     pressure_numerator=!model?2*kinetic(n,v,mass)+virial:measure?molecular_pressure_numerator(nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):NAN;
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
-    if(result&&ws!=&local)remember(ws,n,x,u,f,box,scalars,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
+    if(result) {
+        memcpy(buffers[3].buf,f,(size_t)n*3*sizeof(double));
+        if(ws!=&local)remember(ws,n,x,u,box,scalars,!continued,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
+    }
 
 cleanup:
     if(bond_buffer.obj)PyBuffer_Release(&bond_buffer);
@@ -663,7 +670,7 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
     if(requested<0||!(dt>0)||!(G>0)||a<0||!isfinite(dt+G+a+heat)){
         PyErr_SetString(PyExc_ValueError,"Gravity requires positive finite timestep and G, nonnegative softening, and finite heat_rate.");goto cleanup;
     }
-    double *x=b[0].buf,*v=b[1].buf,*f=b[2].buf,*mass=b[3].buf;
+    double *x=b[0].buf,*v=b[1].buf,*f=NULL,*mass=b[3].buf;
     for(int i=0;i<n;++i){
         if(!(mass[i]>0)||!isfinite(mass[i])){PyErr_SetString(PyExc_ValueError,"Masses must be finite and positive.");goto cleanup;}
         for(int d=0;d<3;++d)if(!isfinite(x[3*i+d])||!isfinite(v[3*i+d])){
@@ -672,13 +679,14 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
     }
     /* There is no neighbour list here; the workspace keeps the forces between calls. */
     const double scalars[WORKSPACE_SCALARS]={G,a}, origin[3]={0,0,0};
-    if(unchanged(ws,n,x,NULL,origin,scalars,mass,(size_t)n,NULL,0)){
-        memcpy(f,ws->f,(size_t)n*3*sizeof(double));
-        U=ws->potential; W=ws->virial;
-        ws->current=0;
+    const int continued=unchanged(ws,n,x,NULL,origin,scalars,mass,(size_t)n,NULL,0);
+    ws->current=0;
+    if(continued){
+        f=ws->f; U=ws->potential; W=ws->virial;
     } else {
-        ws->current=0;
-        if(prepare_workspace(ws,n)<0 || gravity_forces(n,x,mass,G,a,f,&U,&W)<0)goto cleanup;
+        if(prepare_workspace(ws,n)<0)goto cleanup;
+        f=ws->f;
+        if(gravity_forces(n,x,mass,G,a,f,&U,&W)<0)goto cleanup;
     }
     while(done<requested){
         kick(n,v,f,mass,.5*dt);
@@ -701,7 +709,10 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
         }
     }
     result=Py_BuildValue("ddii",U,W,done,interrupted);
-    if(result&&ws!=&local)remember(ws,n,x,NULL,f,origin,scalars,mass,(size_t)n,NULL,0,U,W);
+    if(result){
+        memcpy(b[2].buf,f,(size_t)n*3*sizeof(double));
+        if(ws!=&local)remember(ws,n,x,NULL,origin,scalars,!continued,mass,(size_t)n,NULL,0,U,W);
+    }
 cleanup:
     release_workspace(&local);
     for(int k=0;k<4;++k)if(b[k].obj)PyBuffer_Release(&b[k]);
