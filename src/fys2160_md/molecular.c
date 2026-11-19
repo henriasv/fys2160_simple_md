@@ -43,6 +43,21 @@ typedef struct {
 } MoleculeList;
 
 typedef struct { double lj, coulomb, kspace, virial, molecular_virial; } Terms;
+/* What one run keeps between calls into the solver: the molecule list, the PPPM
+   mesh and work arrays, and the positions, box, forces and energies exactly as
+   the previous call left them. inputs holds everything else the forces depend
+   on. A call that finds all of it bit-for-bit unchanged continues with that list
+   and those forces; any difference makes it start afresh. */
+#define INPUT_SCALARS 20
+typedef struct {
+    MoleculeList nb;
+    PPPM pppm;
+    int pppm_ready, n, current;
+    double *site, *offset, *site_force, *x, *u, *f, box[3], *inputs, *kept_inputs;
+    size_t input_count;
+    Terms terms;
+} MolecularWorkspace;
+static const char WORKSPACE[] = "fys2160_md._core.molecular_workspace";
 /* CPU seconds per part, reported for benchmarks. */
 typedef struct { double list, pair, kspace, total; } Timings;
 static double seconds(void) { return (double)clock()/CLOCKS_PER_SEC; }
@@ -439,7 +454,8 @@ static int prepare_pppm(Model *m, PPPM *pppm, int *ready, double *state, const d
         state[3] = g; state[7] = estimate;
     }
     int mesh[3] = {(int)state[0], (int)state[1], (int)state[2]};
-    if (*ready && (pppm->n[0] != mesh[0] || pppm->n[1] != mesh[1] || pppm->n[2] != mesh[2] || pppm->g != state[3])) {
+    if (*ready && (pppm->n[0] != mesh[0] || pppm->n[1] != mesh[1] || pppm->n[2] != mesh[2] || pppm->g != state[3] ||
+                   pppm->order != order || pppm->sites != m->n)) {
         pppm_free(pppm); *ready = 0;
     }
     if (!*ready) {
@@ -448,6 +464,42 @@ static int prepare_pppm(Model *m, PPPM *pppm, int *ready, double *state, const d
     }
     m->g = state[3];
     return 0;
+}
+
+static void release_workspace(MolecularWorkspace *w) {
+    free(w->nb.pairs); free(w->nb.reference); free(w->site); free(w->offset); free(w->site_force);
+    free(w->x); free(w->u); free(w->f); free(w->inputs); free(w->kept_inputs);
+    if (w->pppm_ready) pppm_free(&w->pppm);
+    memset(w, 0, sizeof *w);
+}
+
+/* Size the arrays for n atoms and a number of force inputs; other sizes discard what was kept. */
+static int prepare_workspace(MolecularWorkspace *w, int n, size_t input_count) {
+    if (w->n == n && w->input_count == input_count) return 0;
+    release_workspace(w);
+    size_t count = (size_t)n*3*sizeof(double);
+    w->nb.reference = malloc(count); w->site = malloc(count); w->offset = malloc(count); w->site_force = malloc(count);
+    w->x = malloc(count); w->u = malloc(count); w->f = malloc(count);
+    w->inputs = malloc(input_count*sizeof(double)); w->kept_inputs = malloc(input_count*sizeof(double));
+    if (!w->nb.reference || !w->site || !w->offset || !w->site_force || !w->x || !w->u || !w->f || !w->inputs || !w->kept_inputs) {
+        release_workspace(w); PyErr_NoMemory(); return -1;
+    }
+    w->n = n; w->input_count = input_count;
+    return 0;
+}
+
+static void free_workspace(PyObject *capsule) {
+    MolecularWorkspace *w = PyCapsule_GetPointer(capsule, WORKSPACE);
+    if (w) { release_workspace(w); free(w); }
+}
+
+PyObject *molecular_workspace(PyObject *self, PyObject *args) {
+    (void)self; (void)args;
+    MolecularWorkspace *w = calloc(1, sizeof *w);
+    if (!w) return PyErr_NoMemory();
+    PyObject *capsule = PyCapsule_New(w, WORKSPACE, free_workspace);
+    if (!capsule) free(w);
+    return capsule;
 }
 
 static int get_buffer(PyObject *object, Py_buffer *view, int writable, Py_ssize_t itemsize, const char *format, int ndim, const Py_ssize_t *shape, const char *name) {
@@ -463,26 +515,28 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     static char *keywords[] = {"x", "v", "u", "f", "box", "mass", "types", "charges", "epsilon", "sigma", "pppm_state", "deform",
         "steps", "timestep", "cutoff", "coulomb_cutoff", "skin", "temperature", "friction", "seed", "heat_rate", "pressure",
         "barostat_mass", "rate", "mvv2e", "qqr2e", "molecule_size", "constraints", "alpha", "lj_shift", "coulomb",
-        "accuracy", "order", NULL};
+        "accuracy", "order", "workspace", NULL};
     enum { X, V, U, F, BOX, MASS, TYPES, CHARGES, EPSILON, SIGMA, STATE, BUFFERS };
-    PyObject *objects[BUFFERS], *deform_object, *result = NULL;
+    PyObject *objects[BUFFERS], *deform_object, *workspace_object = NULL, *result = NULL;
     Py_buffer view[BUFFERS + 1];
     memset(view, 0, sizeof view);
-    int requested, size, lj_shift, coulomb, order, done = 0, interrupted = 0, pppm_ready = 0;
+    int requested, size, lj_shift, coulomb, order, done = 0, interrupted = 0;
     double dt, cutoff, coulomb_cutoff, skin, T, gamma, heat, targetP, baromass, rate, mvv2e, qqr2e, alpha, accuracy;
     double constraint[3];
     unsigned long long seed;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOOOOOOOOOiddddddKddddddi(ddd)dpidi", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOOOOOOOOOiddddddKddddddi(ddd)dpidi|O", keywords,
             &objects[X], &objects[V], &objects[U], &objects[F], &objects[BOX], &objects[MASS], &objects[TYPES],
             &objects[CHARGES], &objects[EPSILON], &objects[SIGMA], &objects[STATE], &deform_object,
             &requested, &dt, &cutoff, &coulomb_cutoff, &skin, &T, &gamma, &seed, &heat, &targetP,
             &baromass, &rate, &mvv2e, &qqr2e, &size, &constraint[0], &constraint[1], &constraint[2],
-            &alpha, &lj_shift, &coulomb, &accuracy, &order)) return NULL;
+            &alpha, &lj_shift, &coulomb, &accuracy, &order, &workspace_object)) return NULL;
     Model m = {0};
-    MoleculeList nb = {0};
-    PPPM pppm;
-    memset(&pppm, 0, sizeof pppm);
-    double *site = NULL, *offset = NULL, *site_force = NULL;
+    /* None or absent gives a workspace for this call only. */
+    MolecularWorkspace local, *ws = &local;
+    memset(&local, 0, sizeof local);
+    if (workspace_object && workspace_object != Py_None && !(ws = PyCapsule_GetPointer(workspace_object, WORKSPACE))) return NULL;
+    MoleculeList *nb = &ws->nb;
+    PPPM *pppm = &ws->pppm;
     Terms terms = {0};
     Timings timing = {0};
     double began = seconds();
@@ -550,14 +604,32 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     for (int d = 0; d < 3; ++d) if (!(box[d] > 2*reach) || !isfinite(box[d])) {
         PyErr_SetString(PyExc_ValueError, "Each box length must exceed twice (cutoff + molecular diameter)."); goto cleanup;
     }
-    nb.radius = reach + skin;
-    nb.reference = malloc((size_t)n*3*sizeof(double));
-    site = malloc((size_t)n*3*sizeof(double));
-    offset = malloc((size_t)n*3*sizeof(double));
-    site_force = malloc((size_t)n*3*sizeof(double));
-    if (!nb.reference || !site || !offset || !site_force) { PyErr_NoMemory(); goto cleanup; }
-    if (coulomb && prepare_pppm(&m, &pppm, &pppm_ready, state, box, accuracy, order) < 0) goto cleanup;
-    if (build_list(&nb, &m, x, u, box) < 0 || forces(&m, &nb, &pppm, x, box, site, offset, site_force, f, &terms, &timing) < 0) goto cleanup;
+    const size_t table = (size_t)types*types, input_count = INPUT_SCALARS + 3*(size_t)n + 2*table;
+    const int kept = ws->current && ws->n == n && ws->input_count == input_count;
+    ws->current = 0;
+    if (prepare_workspace(ws, n, input_count) < 0) goto cleanup;
+    double *site = ws->site, *offset = ws->offset, *site_force = ws->site_force;
+    nb->radius = reach + skin;
+    if (coulomb && prepare_pppm(&m, pppm, &ws->pppm_ready, state, box, accuracy, order) < 0) goto cleanup;
+    {
+        /* Everything the forces depend on besides positions and box. */
+        const double scalars[INPUT_SCALARS] = {cutoff, m.coulomb_cutoff, skin, size, alpha, lj_shift, coulomb, qqr2e,
+            constraint[0], constraint[1], constraint[2], coulomb ? order : 0, coulomb ? state[0] : 0,
+            coulomb ? state[1] : 0, coulomb ? state[2] : 0, coulomb ? state[3] : 0};
+        double *inputs = ws->inputs;
+        memcpy(inputs, scalars, sizeof scalars);
+        inputs += INPUT_SCALARS;
+        for (int i = 0; i < n; ++i) { inputs[3*i] = m.mass[i]; inputs[3*i+1] = m.charge[i]; inputs[3*i+2] = m.type[i]; }
+        memcpy(inputs + 3*(size_t)n, m.epsilon, table*sizeof(double));
+        memcpy(inputs + 3*(size_t)n + table, m.sigma, table*sizeof(double));
+    }
+    const size_t state_bytes = (size_t)n*3*sizeof(double);
+    if (kept && memcmp(ws->inputs, ws->kept_inputs, input_count*sizeof(double)) == 0 && memcmp(ws->x, x, state_bytes) == 0 &&
+        memcmp(ws->u, u, state_bytes) == 0 && memcmp(ws->box, box, sizeof ws->box) == 0) {
+        /* Continue the previous call: its list and forces still hold. */
+        memcpy(f, ws->f, state_bytes);
+        terms = ws->terms;
+    } else if (build_list(nb, &m, x, u, box) < 0 || forces(&m, nb, pppm, x, box, site, offset, site_force, f, &terms, &timing) < 0) goto cleanup;
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
     const double dof = 3.0*n - 3 - (size == 3 ? 3.0*m.molecules : 0);
     const double centre_dof = 3.0*m.molecules - 3;
@@ -596,11 +668,11 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         for (int d = 0; d < 3; ++d) if (!(box[d] > 2*reach)) {
             PyErr_SetString(PyExc_ValueError, "Box contracted below twice (cutoff + molecular diameter)."); goto cleanup;
         }
-        if (coulomb && prepare_pppm(&m, &pppm, &pppm_ready, state, box, accuracy, order) < 0) goto cleanup;
+        if (coulomb && prepare_pppm(&m, pppm, &ws->pppm_ready, state, box, accuracy, order) < 0) goto cleanup;
         double listed = seconds();
-        if (needs_rebuild(&nb, n, u, box, skin) && build_list(&nb, &m, x, u, box) < 0) goto cleanup;
+        if (needs_rebuild(nb, n, u, box, skin) && build_list(nb, &m, x, u, box) < 0) goto cleanup;
         timing.list += seconds() - listed;
-        if (forces(&m, &nb, &pppm, x, box, site, offset, site_force, f, &terms, &timing) < 0) goto cleanup;
+        if (forces(&m, nb, pppm, x, box, site, offset, site_force, f, &terms, &timing) < 0) goto cleanup;
         kick(&m, v, f, 0.5*dt);
         if (size == 3 && constrain_velocities(&m, v, x, box) < 0) goto cleanup;
         if (targetP >= 0) {
@@ -628,10 +700,18 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         "pressure_numerator", 2*centre_kinetic(&m, v) + terms.molecular_virial,
         "rng", (unsigned long long)rng, "done", done, "interrupted", interrupted, "rate", rate,
         "timings", "list", timing.list, "pair", timing.pair, "kspace", timing.kspace, "total", timing.total);
+    if (result && ws != &local) {
+        /* The mesh may have been chosen again during the call. */
+        if (coulomb) for (int k = 0; k < 4; ++k) ws->inputs[12+k] = state[k];
+        double *swap = ws->kept_inputs; ws->kept_inputs = ws->inputs; ws->inputs = swap;
+        memcpy(ws->x, x, state_bytes); memcpy(ws->u, u, state_bytes); memcpy(ws->f, f, state_bytes);
+        memcpy(ws->box, box, sizeof ws->box);
+        ws->terms = terms; ws->current = 1;
+    }
 cleanup:
     for (int k = 0; k <= BUFFERS; ++k) if (view[k].obj) PyBuffer_Release(&view[k]);
-    free(m.shift); free(nb.pairs); free(nb.reference); free(site); free(offset); free(site_force);
-    if (pppm_ready) pppm_free(&pppm);
+    free(m.shift);
+    release_workspace(&local);
     return result;
 }
 
