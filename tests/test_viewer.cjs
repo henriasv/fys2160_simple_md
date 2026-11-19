@@ -119,4 +119,12 @@ assert.ok(controls.get('output').textContent.includes('t 1.50 ps'));
 assert.ok(controls.get('output').textContent.includes('T 300.0 K'));
 assert.ok(controls.get('output').textContent.includes('P 1.250 atm'));
 water.dispose();
+// A flat system (box thickness 0) opens face-on to its plane in either projection: x right, y up.
+for(const projection of ['perspective','orthographic']){
+  controls.get('[data-projection]').value=projection;
+  const sheet=sandbox.createMDView(host,{frames:[{...frame,box:[10,20,0],x:[[5,10,0],[7,16,0]]}],boundary:'walls',projection,zoom:1,live:true,note:''});
+  assert.equal(images[0][0],360);assert.equal(images[0][1],300);   // the centre of the box
+  assert.ok(Math.abs(images[1][0]-390)<1e-9&&Math.abs(images[1][1]-210)<1e-9,images[1]);  // 2 right and 6 up, at 300/20 pixels per length
+  assert.equal(edgeCount,24);sheet.dispose();
+}
 console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, playback controls, live status, sizing, water display and cleanup.');

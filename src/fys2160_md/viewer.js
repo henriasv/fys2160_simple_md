@@ -131,11 +131,14 @@ const cy=Math.cos(.35),sy=Math.sin(.35),cp=Math.cos(.3),sp=Math.sin(.3);
 const initial=[[cy,0,-sy],[-sy*sp,cp,-cy*sp],[sy*cp,sp,cy*cp]];
 // Orthographic views open face-on to the xz plane with z up, or with z across
 // for a box elongated along z (a slab). Rows: screen right, screen up, towards viewer.
+// A flat system (box thickness 0) always opens face-on to its own plane: x right, y up.
+const flat=frames[0].box[2]===0;
 function frontView(){
   const b=frames[+slider.value].box;
+  if(flat)return [[1,0,0],[0,1,0],[0,0,1]];
   return b[2]===Math.max(...b)&&b[2]>1.5*Math.min(...b)?[[0,0,1],[1,0,0],[0,1,0]]:[[1,0,0],[0,0,1],[0,-1,0]];
 }
-function homeView(){return (projection.value==='orthographic'?frontView():initial).map(row=>row.slice());}
+function homeView(){return (projection.value==='orthographic'||flat?frontView():initial).map(row=>row.slice());}
 let rotation=homeView();
 // Apply camera-axis rotations, so the near face follows the pointer at any orientation.
 function rotateView(dx,dy){
@@ -356,7 +359,7 @@ function startOmovi([lib,THREE]){
   function resetCamera(){
     const lengths=frames[+slider.value].box,longest=lengths.indexOf(Math.max(...lengths));
     let direction=initial[2];
-    if(projection.value==='orthographic'){
+    if(projection.value==='orthographic'||flat){
       // Straight along y is the pole of omovi's y-up orbit: step off it by a hair,
       // on the side that makes the front view's up direction point up on screen.
       const [,up,toward]=frontView();

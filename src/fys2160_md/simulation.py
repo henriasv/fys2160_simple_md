@@ -9,7 +9,8 @@ import shutil
 import time
 import numpy as np
 from . import _core
-from .system import System, MODELS, _positive, _integer, _readonly
+from .system import System, MODELS, WALLS, _positive, _integer, _readonly
+from .walls import Piston, external_terms, piston_config
 from .results import Run, write_json
 from .species import parameter, per_atom, charges as _charges
 from .bonds import bond_config
@@ -76,12 +77,19 @@ class MDSimulation:
     controls given here plus its own arguments; nothing carries over between
     runs except through the state you pass in. ``live = sim.start(state)``
     gives the same run in memory, to advance a few steps at a time.
+
+    A state with walls (``boundary="walls"``) is held in by them: an atom that
+    has passed a wall by the depth d is pushed back with the force
+    ``wall_stiffness*d**2`` (potential energy ``wall_stiffness*d**3/3``), so a
+    bounce conserves energy; at the default an atom turns within about a tenth
+    of a diameter. The force on each wall is among the observables.
     """
 
     def __init__(self, system=None, *, pair_potential='lj', epsilon=1., sigma=1., mixing_rule='lorentz-berthelot', exclude_bonded_pairs=True, temperature=None, ensemble='nvt', timestep=None,
                  cutoff=None, G=1., softening=.05, skin=None, friction=None, pressure=None, pressure_time=None,
                  heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation', units='reduced',
-                 charge=None, coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True):
+                 charge=None, coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True,
+                 wall_stiffness=1e4):
         if system is not None:
             raise TypeError('MDSimulation holds interactions and controls only. Pass the state to each run: '
                             'run = sim.run(system, steps=...), then continue with sim.run(run.state, ...).')
@@ -124,6 +132,7 @@ class MDSimulation:
         self._lj_shift = lj_shift
         self._pair_potential = pair_potential
         self._exclude_bonded_pairs = exclude_bonded_pairs
+        self.wall_stiffness = _positive(wall_stiffness, 'wall_stiffness')
         self.cutoff = None if pair_potential == 'gravity' else _positive(2.5 if cutoff is None else cutoff, 'cutoff')
         self.skin = _positive(defaults['skin'] if skin is None else skin, 'skin')
         self.friction = _positive(defaults['friction'] if friction is None else friction, 'friction')
@@ -188,7 +197,7 @@ class MDSimulation:
         return self._defaults.copy()
 
     def _engine(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
-                heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None):
+                heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None):
         """Working copy of state for one run, with this run's controls resolved."""
         if not isinstance(state, System):
             raise TypeError('Pass a System as the state, such as FCC(N=500, rho=0.1) or run.state.')
@@ -199,10 +208,12 @@ class MDSimulation:
                                heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy).items():
             if value is not None:
                 settings[key] = value
+        if state.walls or piston is not None:
+            settings['piston'] = piston
         return _Engine(self, state, settings, None if seed is None else _seed(seed))
 
     def start(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
-              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None):
+              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None):
         """Start a run of a copy of ``state`` in memory, and return it as a LiveRun.
 
         Nothing is written to disk. ``live.advance(steps)`` takes steps;
@@ -212,14 +223,15 @@ class MDSimulation:
         from, here or with ``sim.run``. The controls, the clock and the random
         sequence are treated as in ``run``, which is this loop with files:
         advancing in pieces gives the same trajectory as one call.
+        ``piston=Piston("right", to=50, speed=0.05)`` moves a wall, as in ``run``.
         """
         return LiveRun(self._engine(state, timestep=timestep, ensemble=ensemble, temperature=temperature,
                                     pressure=pressure, heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff,
-                                    kspace_accuracy=kspace_accuracy, seed=seed))
+                                    kspace_accuracy=kspace_accuracy, seed=seed, piston=piston))
 
     @_legacy_output_names
     def run(self, state, steps=1000, *, timestep=None, ensemble=None, temperature=None, pressure=None,
-            heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None,
+            heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None, piston=None,
             thermo_every=100, trajectory_every=500, show=False, max_fps=None, frame_every=100, storage_name=None):
         """Evolve a copy of ``state`` and save the run; the final state is ``run.state``.
 
@@ -242,6 +254,14 @@ class MDSimulation:
         again when these settings change or the box has changed by more than 5%.
         ``deform=s`` (nve/nvt only) scales every box length linearly in time to s
         times its starting value, moving whole molecules with their centres of mass.
+
+        In a box with walls, the thermo table has for each wall the force on it at
+        that step (``wall_force_right``, positive outwards) and the momentum it has
+        received so far (``wall_impulse_right``); the mean force between two rows is
+        the difference in impulse over the difference in time.
+        ``piston=Piston("right", to=50, speed=0.05)`` moves that wall at constant
+        speed to x = 50, where it stops; the box follows it, and ``work`` is the work
+        the moving wall has done on the atoms.
         """
         storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
         steps = _integer(steps, 'steps', 0)
@@ -254,7 +274,8 @@ class MDSimulation:
             if not show:
                 raise ValueError('max_fps is a live-view option; set show=True.')
         advancing = self.start(state, timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
-                               heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed)
+                               heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed,
+                               piston=piston)
         engine = advancing._engine
         if deform is not None:
             deform = _positive(deform, 'deform')
@@ -289,9 +310,10 @@ class MDSimulation:
         status = 'completed'
         def frame():
             nonlocal frame_index, last_frame
+            D = engine.dimension
             np.savez_compressed(path/'frames'/f'{frame_index:07d}.npz',
-                positions=engine._x, unwrapped=engine._u, velocities=engine._v,
-                box=engine._box, step=engine.step, time=engine.time)
+                positions=engine._x[:, :D], unwrapped=engine._u[:, :D], velocities=engine._v[:, :D],
+                box=engine._box[:D], step=engine.step, time=engine.time)
             frame_index += 1
             last_frame = engine.step
         try:
@@ -393,20 +415,23 @@ class LiveRun:
         if self._advance(_integer(steps, 'steps', 0)):
             raise KeyboardInterrupt
 
-    def set(self, *, timestep=None, ensemble=None, temperature=None, pressure=None, heat_rate=None):
+    def set(self, *, timestep=None, ensemble=None, temperature=None, pressure=None, heat_rate=None, piston=None):
         """Change controls for the steps that follow; omitted ones keep their values.
 
         The effect is that of a new run started from ``live.state`` with these
         controls: a new ``temperature`` or ``pressure`` is the target from the
         next step (a step change, not a ramp), and velocities are not reset.
+        ``piston=Piston("right", to=50, speed=0.05)`` sets that wall moving from
+        where it is; it stops by itself at ``to``.
         """
         self._check()
         self._engine._set(timestep=timestep, ensemble=ensemble, temperature=temperature,
-                          pressure=pressure, heat_rate=heat_rate)
+                          pressure=pressure, heat_rate=heat_rate, piston=piston)
 
     @property
     def settings(self):
-        """The controls now in force (timestep, ensemble, temperature, pressure, heat_rate)."""
+        """The controls now in force (timestep, ensemble, temperature, pressure,
+        heat_rate, and piston for a system with walls)."""
         return self._engine.settings.copy()
 
     @property
@@ -421,23 +446,33 @@ class LiveRun:
 
     @property
     def observables(self):
-        """Current values of the quantities that ``run`` records in thermo.csv, as a dict."""
+        """Current values of the quantities that ``run`` records in thermo.csv, as a dict.
+
+        With walls it also has, for each wall, ``wall_force_<name>`` (the force
+        of the atoms on that wall at this step, positive outwards) and
+        ``wall_impulse_<name>`` (the momentum they have delivered to it so far),
+        and ``work``, the work moving walls have done on the atoms; with a
+        piston, ``piston_position``. The mean force on a wall between two
+        readings is the difference in impulse over the difference in time.
+        """
         return self._engine.observables
 
     @property
     def positions(self):
-        """Read-only (atoms, 3) snapshot of the positions, wrapped into a periodic box."""
-        return _readonly(self._engine._x)
+        """Read-only snapshot of the positions, one row per atom: (x, y, z), or
+        (x, y) for a flat system. Wrapped into the box along periodic directions."""
+        return _readonly(self._engine._x[:, :self._engine.dimension])
 
     @property
     def velocities(self):
-        """Read-only (atoms, 3) snapshot of the velocities."""
-        return _readonly(self._engine._v)
+        """Read-only snapshot of the velocities, one row per atom, with the columns of ``positions``."""
+        return _readonly(self._engine._v[:, :self._engine.dimension])
 
     @property
     def box(self):
-        """Read-only snapshot of the three box lengths, as in a saved frame."""
-        return _readonly(self._engine._box)
+        """Read-only snapshot of the box lengths (three, or two for a flat system),
+        as in a saved frame. A piston changes the length along its axis."""
+        return _readonly(self._engine._box[:self._engine.dimension])
 
     @property
     def state(self):
@@ -501,8 +536,11 @@ class _Engine:
                 raise ValueError('Gravity requires an unbonded System with boundary="open".')
             if len(system.atoms) > 4096:
                 raise ValueError('Direct all-pairs gravity supports at most 4096 particles.')
-        elif system.boundary != 'periodic':
-            raise ValueError('Lennard–Jones currently requires periodic boundaries.')
+        elif system.boundary == 'open':
+            raise ValueError('Lennard–Jones needs a box: periodic or with walls. boundary="open" is for gravity.')
+        elif (system.dimension == 2 or system.walls) and self.kind != 'pair':
+            raise ValueError('A flat system and walls use reduced units and atoms without charges.')
+        self.dimension = system.dimension
         zero = self.kind == 'molecular'
         self._epsilon = parameter(sim._epsilon, system.species, 'epsilon', zero=zero)
         self._sigma = parameter(sim._sigma, system.species, 'sigma', zero=zero)
@@ -520,14 +558,17 @@ class _Engine:
         if self.kind == 'pair':
             settings.pop('coulomb_cutoff', None)
             settings.pop('kspace_accuracy', None)
-        self.settings = _check_controls(settings, sim, self.kind, system.model)
+        self.settings = self._controls(settings)
         if self.kind == 'molecular':
             self._prepare_molecular()
         self._deform = None
+        # The total momentum is conserved, and kept at zero, along periodic directions only.
+        conserved = system._conserved
         if system._v is None:
             rng = np.random.default_rng(sim.seed if seed is None else seed)
-            self._v = np.ascontiguousarray(rng.normal(size=self._x.shape)/np.sqrt(self._mass[:, None]))
-            self._v -= (self._v*self._mass[:, None]).sum(axis=0)/self._mass.sum()
+            self._v = np.zeros_like(self._x)
+            self._v[:, :self.dimension] = rng.normal(size=(len(self._x), self.dimension))/np.sqrt(self._mass[:, None])
+            self._v -= np.where(conserved, (self._v*self._mass[:, None]).sum(axis=0)/self._mass.sum(), 0.)
             if system.model == 'diatomic-rigid':
                 self._project_velocities()
             if system.model == 'water-rigid':
@@ -537,7 +578,7 @@ class _Engine:
         else:
             self._v = system._v
             momentum = self._v*self._mass[:, None]
-            if np.linalg.norm(momentum.sum(axis=0)) > 1e-10*max(1., np.linalg.norm(momentum)):
+            if np.linalg.norm(momentum.sum(axis=0)[conserved]) > 1e-10*max(1., np.linalg.norm(momentum)):
                 raise ValueError('Remove centre-of-mass velocity before starting this solver.')
         self._u = self._x.copy() if system._u is None else system._u
         system._u = self._u
@@ -546,6 +587,12 @@ class _Engine:
         self.time = system.time
         self.heat_added = system._heat
         self._rng = seed if seed is not None else (system._rng if system._rng is not None else sim.seed)
+        # One row per wall for the solver, and for each wall the force on it now,
+        # the impulse it has received and the work it has done on the atoms.
+        self._walls, self._external = external_terms(system, sim.wall_stiffness, self.settings.get('piston'))
+        self._wall_sums = np.zeros((len(self._walls), 3)) if self._walls else None
+        if self._walls and system._wall_sums is not None:
+            self._wall_sums[:, 1:] = system._wall_sums
         self._barostat(system._rate)
         # Kept by the native solver between calls: the neighbour list and the forces.
         self._workspace = _core.molecular_workspace() if self.kind == 'molecular' else _core.workspace()
@@ -559,11 +606,20 @@ class _Engine:
             # Barostat inertia from centre-of-mass degrees of freedom (3N-3)+3.
             self._baromass = 3*self.particles*self._units.boltzmann*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
 
+    def _controls(self, settings):
+        """Validate run controls for this state."""
+        settings = _check_controls(settings, self.sim, self.kind, self.model)
+        if (self.dimension == 2 or self._system.walls) and settings['ensemble'] in ('nph', 'npt'):
+            raise ValueError('Pressure control needs a three-dimensional periodic box; use nve or nvt.')
+        external_terms(self._system, self.sim.wall_stiffness, settings.get('piston'))
+        return settings
+
     def _set(self, **controls):
         """Change run controls as a new run from the current state would have them."""
         settings = self.settings.copy()
         settings.update({key: value for key, value in controls.items() if value is not None})
-        self.settings = _check_controls(settings, self.sim, self.kind, self.model)
+        self.settings = self._controls(settings)
+        self._walls, self._external = external_terms(self._system, self.sim.wall_stiffness, self.settings.get('piston'))
         self._barostat(self._rate)
 
     def _prepare_molecular(self):
@@ -663,7 +719,8 @@ class _Engine:
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
-            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace, int(measure))
+            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace, int(measure),
+            self.dimension, self._external, self._wall_sums)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, numerator = result
         self._pressure_numerator = numerator if measure else None
         self.step += done
@@ -706,9 +763,10 @@ class _Engine:
             self._advance(0, measure=True)
         U = self._units
         K = float(.5*np.sum(self._mass[:,None]*self._v**2))*U.mvv2e
-        V = float(np.prod(self._box))
+        D = self.dimension
+        V = float(np.prod(self._box[:D]))  # the area of a flat system
         T = 2*K/(self.dof*U.boltzmann)
-        P_internal = self._pressure_numerator/(3*V)
+        P_internal = self._pressure_numerator/(D*V)
         P = P_internal*U.pressure
         E = K+self._potential
         if self.pair_potential == 'gravity':
@@ -736,6 +794,14 @@ class _Engine:
         if self.kind == 'molecular' and self._charge is not None:
             values['lj_energy'] = self._terms['lj']
             values['coulomb_energy'] = self._terms['coulomb']+self._terms['kspace']
+        if self._walls:
+            for name, (force, impulse, _) in zip(self._walls, self._wall_sums.tolist()):
+                values[f'wall_force_{name}'] = force
+                values[f'wall_impulse_{name}'] = impulse
+            values['work'] = float(self._wall_sums[:, 2].sum())
+            piston = self.settings.get('piston')
+            if piston is not None:
+                values['piston_position'] = float(self._box[WALLS.index(piston.wall)//2])
         return values
 
     def state(self):
@@ -745,26 +811,34 @@ class _Engine:
         state._rng = self._rng
         state._heat = self.heat_added
         state._rate = self._rate if self.settings['ensemble'] in ('nph', 'npt') else 0.
+        if self._walls:
+            state._wall_sums = self._wall_sums[:, 1:].copy()
         if self.kind == 'molecular' and self._charge is not None:
             state._pppm = (self._pppm_state.copy(), self.settings['kspace_accuracy'], self.settings['coulomb_cutoff'])
         return state
 
     def _config(self):
         sim, system = self.sim, self._system
+        settings = self.settings.copy()
+        if 'piston' in settings:
+            settings['piston'] = piston_config(settings['piston'])
         return dict(model=self.model, bond=bond_config(system.bond), units=self.units,
                     charge=sim.charge, coulomb=sim.coulomb, lj_shift=sim.lj_shift,
+                    dimension=self.dimension, walls=list(system.walls), wall_stiffness=sim.wall_stiffness,
                     boundary=system.boundary, G=sim.G, softening=sim.softening,
                     pair_potential=sim.pair_potential, epsilon=sim.epsilon, sigma=sim.sigma, mixing_rule=sim.mixing_rule,
                     exclude_bonded_pairs=sim.exclude_bonded_pairs, particles=self.particles,
-                    density=system.rho if system.boundary == "periodic" else None, seed=sim.seed,
+                    density=system.rho if system.boundary != "open" else None, seed=sim.seed,
                     cutoff=self.cutoff, skin=self.skin, friction=self.friction,
-                    pressure_time=self.pressure_time, storage_name=sim.storage_name, **self.settings)
+                    pressure_time=self.pressure_time, storage_name=sim.storage_name, **settings)
 
     def _save_checkpoint(self, path):
         state = self.state()
+        D = self.dimension
         with (path/'checkpoint.tmp').open('wb') as stream:
-            np.savez_compressed(stream, positions=self._x, velocities=self._v,
-                unwrapped=self._u, masses=self._mass, box=self._box, species=self._system._species,
+            np.savez_compressed(stream, positions=self._x[:, :D], velocities=self._v[:, :D],
+                unwrapped=self._u[:, :D], masses=self._mass, box=self._box[:D], species=self._system._species,
+                **({'wall_sums': self._wall_sums[:, 1:]} if self._walls else {}),
                 rng=np.uint64(self._rng), step=self.step, time=self.time,
                 heat_added=self.heat_added, barostat_rate=state._rate, barostat_mass=self._baromass,
                 **({'pppm_state': self._pppm_state, 'pppm_settings': np.array([self.settings['kspace_accuracy'], self.settings['coulomb_cutoff']])}

@@ -64,7 +64,7 @@ class LiveView:
         obs = sim.observables
         return dict(x=np.round(sim._x[:LiveView.visible(sim)], 5).tolist(), box=sim._box.tolist(),
                     step=sim.step, time=sim.time, temperature=obs['temperature'],
-                    pressure=obs['pressure'] if sim.system.boundary == 'periodic' else None)
+                    pressure=obs['pressure'] if sim.system.boundary != 'open' else None)
 
     @staticmethod
     def visible(sim):
@@ -73,7 +73,7 @@ class LiveView:
     def start(self, sim, steps=0):
         from IPython.display import display
         shown = self.visible(sim)
-        note = (f'Live 3D · showing {shown} of {len(sim._x)} atoms. '
+        note = (f'Live {sim.dimension}D · showing {shown} of {len(sim._x)} atoms. '
                 'Drag to rotate; two-finger click-drag or Shift-drag to pan; scroll to zoom. ')
         note += (f'{self.frame_every} MD steps/frame; capped at {self.max_fps:g} fps.'
                  if self.max_fps is not None else 'Full simulation speed; display updates capped at 20 fps.')
@@ -131,8 +131,11 @@ def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='perspe
     frames = []
     for index in selected:
         with np.load(paths[index], allow_pickle=False) as f:
-            frames.append(dict(x=np.round(f['positions'][:int(max_atoms)], 5).tolist(),
-                               box=f['box'].tolist(), time=float(f['time']), step=int(f['step'])))
+            x, box = f['positions'][:int(max_atoms)], f['box']
+            if x.shape[1] == 2:  # a flat system is drawn in the plane z = 0 of a box without thickness
+                x, box = np.column_stack((x, np.zeros(len(x)))), np.append(box, 0.)
+            frames.append(dict(x=np.round(x, 5).tolist(),
+                               box=box.tolist(), time=float(f['time']), step=int(f['step'])))
     species = run.metadata.get('atom_species', [])[:int(max_atoms)]
     display_sigma, extra = _display(config, species, particle_radius)
     data = dict(boundary=config.get('boundary','periodic'), frames=frames, projection=projection, zoom=zoom, sigma=display_sigma, species=species, molecular=config['model'] != 'atomic', renderer=renderer, **extra)

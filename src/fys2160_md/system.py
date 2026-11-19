@@ -7,6 +7,19 @@ from .units import units as _units
 
 MODELS = {'atomic': 0, 'diatomic-flexible': 1, 'diatomic-rigid': 2, 'water-rigid': 3}
 _SIZE = {'atomic': 1, 'diatomic-flexible': 2, 'diatomic-rigid': 2, 'water-rigid': 3}
+# The six faces of the box, two per axis: at x = 0 and x = Lx, y = 0 and y = Ly,
+# z = 0 and z = Lz. x runs to the right, y upwards and z towards the viewer.
+WALLS = ('left', 'right', 'bottom', 'top', 'back', 'front')
+_BEYOND = 1.  # how far beyond a wall an atom of a given state may be (reduced length)
+
+
+def _walled(boundary, dimension):
+    """Which axes have walls, from one word for all axes or one word per axis."""
+    words = (boundary,)*dimension if isinstance(boundary, str) else tuple(boundary)
+    if boundary != 'open' and (len(words) != dimension or any(word not in ('periodic', 'walls') for word in words)):
+        raise ValueError('boundary must be "periodic", "walls" or "open", or one of "periodic" and "walls" '
+                         'for each axis, such as ("walls", "periodic").')
+    return tuple(word == 'walls' for word in words)
 
 
 def _positive(value, name, *, zero=False):
@@ -36,6 +49,7 @@ class Box:
 
     @property
     def volume(self):
+        """Product of the lengths: the area of a flat (two-dimensional) box."""
         return float(np.prod(self.lengths))
 
 
@@ -58,24 +72,42 @@ class System:
     the run's final state is ``run.state``. A state from a run also carries the
     simulation time, step count and thermostat/barostat state, so continuing from
     it is identical to one longer run. All public arrays are read-only snapshots.
+
+    Positions with two columns and a box with two lengths make a flat,
+    two-dimensional system: ``dimension`` is 2, velocities have two columns and
+    ``box.volume`` is the area. ``boundary="walls"`` puts a wall on every face
+    of the box instead of periodic images; one word per axis, such as
+    ``("walls", "periodic")``, puts walls on the two faces across that axis
+    only. The walls are named in ``walls``; every atom must start between them.
     """
 
     def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced",
                  unwrapped=None, time=0., step=0):
-        if boundary not in ("periodic", "open"):
-            raise ValueError("boundary must be periodic or open.")
-        self._boundary = boundary
+        x=np.array(positions,dtype=float,order='C',copy=True)
+        if x.ndim!=2 or x.shape[1] not in (2,3) or not np.isfinite(x).all():
+            raise ValueError('positions must be a finite (N,3) array, or (N,2) for a flat system.')
+        D=x.shape[1]
+        self._dim=D
+        self._walled=_walled(boundary,D)
+        walled=np.array(self._walled)
+        self._boundary = boundary if isinstance(boundary,str) else "walls" if walled.all() else "periodic" if not walled.any() else tuple(boundary)
         self._units = _units(units).name
         model, bond = resolve_model(model, molecule, bond)
-        if boundary == "open" and model != "atomic":
-            raise ValueError("Open boundaries currently support unbonded particles only.")
+        if boundary == "open" and (model != "atomic" or D != 3):
+            raise ValueError("Open boundaries currently support unbonded particles in three dimensions only.")
+        if (D==2 or walled.any()) and model != "atomic":
+            raise ValueError("A flat system and walls currently take unbonded atoms only.")
         self._bond = bond
-        x=np.array(positions,dtype=float,order='C',copy=True)
-        lengths=np.broadcast_to(np.asarray(box,dtype=float),(3,)).copy()
-        if x.ndim!=2 or x.shape[1]!=3 or not np.isfinite(x).all():
-            raise ValueError('positions must be a finite (N,3) array.')
+        try:
+            lengths=np.broadcast_to(np.asarray(box,dtype=float),(D,)).copy()
+        except ValueError:
+            raise ValueError(f'box must be one length or {D} lengths, to match positions with {D} columns.') from None
         if not np.isfinite(lengths).all() or np.any(lengths<=0):
             raise ValueError('box lengths must be finite and positive.')
+        # A state taken from a run may hold an atom in the middle of a bounce, a
+        # little beyond a wall; further out the wall would throw it back hard.
+        if np.any(x[:,walled]<-_BEYOND) or np.any(x[:,walled]>lengths[walled]+_BEYOND):
+            raise ValueError('Every atom must start between the walls: coordinates from 0 to the box length.')
         if model not in MODELS:
             raise ValueError(f'model must be one of {tuple(MODELS)}')
         if model.startswith('diatomic') and len(x)%2:
@@ -99,18 +131,25 @@ class System:
             raise ValueError('Bond length must be less than half the shortest box side.')
         self._model=model
         self._N=_integer(len(x)//_SIZE[model],'N',2)
-        self._box=lengths
-        self._x=np.ascontiguousarray(x%lengths if boundary == "periodic" else x)
+        if boundary != "open":
+            x[:,~walled]%=lengths[~walled]
+        # The solver works in three dimensions: a flat system has z = 0 throughout
+        # and a box of thickness 0. The public arrays have D columns.
+        self._box=np.zeros(3)
+        self._box[:D]=lengths
+        self._x=self._columns(x)
         self._mass=np.ones(len(x)) if masses is None else np.array(masses,dtype=float,order='C',copy=True)
         if self._mass.shape!=(len(x),) or not np.isfinite(self._mass).all() or np.any(self._mass<=0):
             raise ValueError('masses must be a positive finite (N,) array.')
 
         self._v=None if velocities is None else np.array(velocities,dtype=float,order='C',copy=True)
         if self._v is not None and (self._v.shape!=x.shape or not np.isfinite(self._v).all()):
-            raise ValueError('velocities must be a finite (N,3) array.')
+            raise ValueError(f'velocities must be a finite (N,{D}) array.')
         self._u=None if unwrapped is None else np.array(unwrapped,dtype=float,order='C',copy=True)
         if self._u is not None and (self._u.shape!=x.shape or not np.isfinite(self._u).all()):
-            raise ValueError('unwrapped positions must be a finite (N,3) array.')
+            raise ValueError(f'unwrapped positions must be a finite (N,{D}) array.')
+        self._v=self._columns(self._v)
+        self._u=self._columns(self._u)
         self._time=float(time)
         if not np.isfinite(self._time):
             raise ValueError('time must be finite.')
@@ -121,6 +160,9 @@ class System:
         self._rate=0.
         self._pppm=None
         self._heat=0.  # total energy added by heat_rate along the runs leading here
+        # For each wall, the impulse it has received and the work it has done on
+        # the atoms by moving, along the runs leading here (None: all zero).
+        self._wall_sums=None
         if model=='diatomic-rigid':
             bond=self._x[::2]-self._x[1::2]
             bond-=lengths*np.rint(bond/lengths)
@@ -139,10 +181,29 @@ class System:
                 if self._v is not None and np.max(np.abs((dr*(self._v[a::3]-self._v[b::3])).sum(axis=1)))>1e-9:
                     raise ValueError('Rigid-water relative velocities must be perpendicular to the constrained distances.')
 
+    def _columns(self, array):
+        """The solver's three-column array for a public one with D columns."""
+        if array is None or self._dim==3:
+            return None if array is None else np.ascontiguousarray(array)
+        return np.ascontiguousarray(np.column_stack((array,np.zeros(len(array)))))
+
     @property
     def boundary(self):
-        """Open systems use box only as a viewing frame, without walls or images."""
+        """"periodic", "walls" (a wall on every face), one of the two per axis, or "open".
+
+        Open systems use box only as a viewing frame, without walls or images."""
         return self._boundary
+
+    @property
+    def dimension(self):
+        """3, or 2 for a flat system: the number of columns of positions and velocities."""
+        return self._dim
+
+    @property
+    def walls(self):
+        """Names of the walls: "left" and "right" (at x = 0 and x = Lx), "bottom" and
+        "top" (y), "back" and "front" (z). Empty for a periodic box."""
+        return tuple(WALLS[2*axis+side] for axis,walled in enumerate(self._walled) if walled for side in (0,1))
 
     @property
     def time(self):
@@ -191,30 +252,43 @@ class System:
 
     @property
     def rho(self):
-        return self.N/self.box.volume if self.boundary == "periodic" else float("nan")
+        """Number density: particles per volume, or per area for a flat system."""
+        return self.N/self.box.volume if self.boundary != "open" else float("nan")
 
     @property
     def box(self):
-        return Box(_readonly(self._box))
+        return Box(_readonly(self._box[:self._dim]))
+
+    def _public(self, array):
+        return None if array is None else _readonly(array[:,:self._dim])
 
     @property
     def atoms(self):
         ids=np.arange(len(self._x))//_SIZE[self.model]
-        return Atoms(_readonly(self._x),_readonly(self._v),_readonly(self._mass),_readonly(ids),_readonly(self._species))
+        return Atoms(self._public(self._x),self._public(self._v),_readonly(self._mass),_readonly(ids),_readonly(self._species))
+
+    @property
+    def _conserved(self):
+        """For each of the solver's three axes: is the total momentum along it conserved?"""
+        return np.array([not walled for walled in self._walled]+[False]*(3-self._dim))
 
     @property
     def dof(self):
-        return 3*len(self._x)-3-{'diatomic-rigid': self.N, 'water-rigid': 3*self.N}.get(self.model, 0)
+        """Degrees of freedom in the kinetic temperature: one per atom and direction,
+        less one for each direction that conserves the total momentum (a direction
+        with walls does not), less the rigid constraints."""
+        return self._dim*len(self._x)-int(self._conserved.sum())-{'diatomic-rigid': self.N, 'water-rigid': 3*self.N}.get(self.model, 0)
 
     def copy(self):
         """Independent copy of the complete state."""
-        return self._copy(self._v)
+        return self._copy(self._public(self._v))
 
     def _copy(self, velocities):
-        other=System(self._x,self._box,velocities=velocities,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units,
-                     unwrapped=self._u,time=self._time,step=self._step)
+        other=System(self._public(self._x),self._box[:self._dim],velocities=velocities,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units,
+                     unwrapped=self._public(self._u),time=self._time,step=self._step)
         other._rng,other._rate,other._heat=self._rng,self._rate,self._heat
         other._pppm=None if self._pppm is None else (self._pppm[0].copy(),)+tuple(self._pppm[1:])
+        other._wall_sums=None if self._wall_sums is None else self._wall_sums.copy()
         return other
 
     def with_velocities(self, velocities):
@@ -226,39 +300,56 @@ class System:
         velocities along a rigid bond are rejected.
         """
         if velocities is None:
-            raise ValueError('velocities must be a finite (N,3) array, one row per atom.')
+            raise ValueError(f'velocities must be a finite (N,{self._dim}) array, one row per atom.')
         return self._copy(velocities)
 
     def with_box(self, box):
-        """Copy of this state in a larger periodic box, with the contents centred.
+        """Copy of this state in another box, with nothing stretched.
 
-        Molecules keep their positions relative to each other and stay whole;
-        nothing is stretched. Enlarging one side turns a bulk liquid into a slab
+        Along a periodic direction the box can only grow, and the contents are
+        centred in it. Molecules keep their positions relative to each other
+        and stay whole. Enlarging one side turns a bulk liquid into a slab
         with two free surfaces and vacuum on both sides, for evaporation:
-        ``slab = state.with_box([Lx, Ly, 4*Lz])``. Velocities, masses and the
-        clock are kept; the barostat velocity and PPPM mesh choice are reset.
+        ``slab = state.with_box([Lx, Ly, 4*Lz])``.
+
+        Along a direction with walls every atom keeps its position: the wall at
+        0 stays and the other wall is put at the new length, which must leave
+        every atom inside. ``gas.with_box((200, 100))`` gives the gas of a
+        100 x 100 box twice the room, as when a partition is removed.
+
+        Velocities, masses and the clock are kept; the barostat velocity and
+        PPPM mesh choice are reset.
         """
-        if self.boundary!='periodic':
-            raise ValueError('with_box needs a periodic system.')
-        old=self._box
-        new=np.broadcast_to(np.asarray(box,dtype=float),(3,)).copy()
-        if not np.isfinite(new).all() or np.any(new<old*(1-1e-12)):
-            raise ValueError(f'Each new box length must be at least the current one, {old.tolist()}.')
+        if self.boundary=='open':
+            raise ValueError('with_box needs a box: periodic or with walls.')
+        D=self._dim
+        old=self._box[:D]
+        walled=np.array(self._walled)
+        try:
+            new=np.broadcast_to(np.asarray(box,dtype=float),(D,)).copy()
+        except ValueError:
+            raise ValueError(f'box must be one length or {D} lengths.') from None
+        if not np.isfinite(new).all() or np.any(new<=0) or np.any(new[~walled]<old[~walled]*(1-1e-12)):
+            raise ValueError(f'Along a periodic direction each new box length must be at least the current one, {old.tolist()}.')
+        if np.any(self._x[:,:D][:,walled]>new[walled]+_BEYOND):
+            raise ValueError('The new walls must leave every atom inside the box.')
         size=_SIZE[self.model]
-        x=self._x.reshape(-1,size,3)
+        x=self._x[:,:D].reshape(-1,size,D)
         m=self._mass.reshape(-1,size)
         # Whole molecules: offsets from the first atom by minimum image, centre of
         # mass wrapped into the old box, then the old box centred in the new one.
+        free=~walled
         offset=x-x[:,:1]
-        offset-=old*np.rint(offset/old)
+        offset[...,free]-=old[free]*np.rint(offset[...,free]/old[free])
         centre=x[:,0]+(m[:,:,None]*offset).sum(axis=1)/m.sum(axis=1)[:,None]
-        centre-=old*np.floor(centre/old)
+        centre[:,free]-=old[free]*np.floor(centre[:,free]/old[free])
         local=offset-(m[:,:,None]*offset).sum(axis=1)[:,None,:]/m.sum(axis=1)[:,None,None]
-        positions=(centre[:,None,:]+local+.5*(new-old)).reshape(-1,3)
-        unwrapped=None if self._u is None else self._u+(positions-self._x)
-        other=System(positions,new,velocities=self._v,masses=self._mass,model=self.model,bond=self.bond,species=self._species,
+        positions=(centre[:,None,:]+local+np.where(walled,0.,.5*(new-old))).reshape(-1,D)
+        unwrapped=None if self._u is None else self._u[:,:D]+(positions-self._x[:,:D])
+        other=System(positions,new,velocities=self._public(self._v),masses=self._mass,model=self.model,bond=self.bond,species=self._species,
                      boundary=self.boundary,units=self.units,unwrapped=unwrapped,time=self._time,step=self._step)
         other._rng,other._heat=self._rng,self._heat
+        other._wall_sums=None if self._wall_sums is None else self._wall_sums.copy()
         return other
 
     @classmethod
@@ -266,4 +357,5 @@ class System:
         return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary,units=units)
 
     def __repr__(self):
-        return f'System(model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None}, time={self._time:g}, step={self._step})'
+        shape = '' if self._dim==3 and self._boundary=='periodic' else f'dimension={self._dim}, boundary={self._boundary!r}, '
+        return f'System({shape}model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None}, time={self._time:g}, step={self._step})'
