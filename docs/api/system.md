@@ -78,11 +78,36 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.dof` | Kinetic degrees of freedom with COM/rigid constraints removed |
 | `system.time`, `.step` | Clock of the state: zero for a new geometry, where the run ended for `run.state` |
 | `system.copy()` | Independent copy of the physical state |
+| `system.with_velocities(velocities)` | Copy with other velocities and the same positions, box and clock ([below](#reverse-or-perturb-velocities)) |
 | `system.with_box(box)` | Copy in a larger periodic box, contents centred and molecules whole; enlarging one side gives a slab with vacuum ([evaporation](../water.md#evaporation-a-slab-with-vacuum)) |
 
 Array snapshots do not let you edit the running simulation. Construct a new
-System to specify different coordinates or velocities. The explicit-array
-convenience `System.from_arrays(positions, velocities, box, ...)` is also available.
+System to specify different coordinates; use `with_velocities` for different
+velocities. The explicit-array convenience
+`System.from_arrays(positions, velocities, box, ...)` is also available.
+
+### Reverse or perturb velocities
+
+```python
+state = run.state
+backwards = state.with_velocities(-state.atoms.velocities)
+
+velocities = state.atoms.velocities.copy()
+velocities[0] += [1e-6, 0, 0]              # nudge one atom
+velocities -= velocities.mean(axis=0)      # keep the total momentum zero (equal masses)
+nudged = state.with_velocities(velocities)
+```
+
+`with_velocities` returns a copy; the original state is unchanged. Positions,
+box, masses, the clock and the thermostat's random sequence are kept, so two
+runs from `state` and `nudged` differ only through the nudge. Velocities need
+one finite row per atom. A run requires zero total momentum (subtract the
+mass-weighted mean velocity when masses differ), and velocities along a rigid
+bond are rejected.
+
+With `ensemble="nve"`, running `backwards` for as many steps as led to `state`
+retraces the motion to its starting positions, up to rounding errors that grow
+with the length of the run.
 
 Clock, forces, measured observables, experiment settings and checkpoint restart
 belong to [MDSimulation](simulation.md).

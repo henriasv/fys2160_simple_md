@@ -10,6 +10,17 @@ This repository contains the standalone course MD package. Python import:
   so chained runs equal one long run. Run controls never carry over. Native solver: `_core.c`
   (LJ/diatomic/gravity, keep byte-identical) and `molecular.c` + `pppm.c` + `fft.c`
   (charged atoms and rigid water, LAMMPS `real` units).
+- A run in memory: `live = sim.start(state, ...)` returns a `LiveRun` with
+  `advance(steps)`, `observables`, `positions`, `velocities`, `box`, `step`, `time`,
+  `set(temperature=...)`, `settings` and `state`. `run` is that loop with files.
+  New observables and controls (walls, pistons, external potentials) belong in
+  `observables` and as keywords of `start`/`set`, not in new methods.
+- `state.with_velocities(v)` and `state.with_box(box)` return changed copies;
+  states are never edited in place.
+- The solver keeps a workspace per run (neighbour list, forces, the state it last
+  returned) and reuses it only when its inputs are bit-for-bit unchanged. A new
+  force input must be added to that comparison (`scalars`/tables in `_core.c`,
+  `inputs` in `molecular.c`), or stale forces will be reused.
 - `tests/test_golden.py` freezes short trajectories of the old solvers; regenerate
   only for an intentional physics change.
 - Shared live/saved WebGL renderer: `viewer.js`.
@@ -233,3 +244,44 @@ frozen ones by up to 2.4e-12 in Pyodide against a tolerance of 1e-11, so a platf
 with another math library (MSVC, musl) may need a looser tolerance. The extension
 already compiles unchanged against `Py_LIMITED_API=0x030B0000`, so `cp311-abi3`
 wheels need only build settings; not done. The repository has no LICENSE file.
+
+2026-11-19 (branch chunked-interface-neighbour-lists): a run can be advanced in
+memory by its caller. `live = sim.start(state, ...)` returns a `LiveRun`:
+`advance(steps)`, `observables` (the thermo.csv columns as a dict), read-only
+snapshots `positions`, `velocities` and `box`, `step`, `time`,
+`set(timestep=, ensemble=, temperature=, pressure=, heat_rate=)`, `settings`, and
+`state` (a System that `sim.run` or `sim.start` continues). No files, threads or
+Jupyter; it runs unchanged in Pyodide. `sim.run` starts a LiveRun and advances
+it, so the two share one code path; saved output is unchanged. `set` gives the
+controls a new run from the current state would have (barostat rate and inertia
+included). `advance` re-raises a keyboard interrupt after whole steps; after any
+other exception the run refuses to continue. `deform` stays a `run` option.
+`state.with_velocities(v)` returns a copy with other velocities and the same
+clock and random sequence (reverse the motion, or perturb one atom; total
+momentum must stay zero). Saved frames already held velocities.
+
+The solver keeps a workspace per run (a PyCapsule made by `_core.workspace()` or
+`_core.molecular_workspace()`): the neighbour list with its reference positions
+and box, the forces, and the positions, box and force parameters as the previous
+call left them. A call continues from it only if those are bit-for-bit unchanged;
+otherwise it rebuilds the list and recomputes the forces. The LJ list is built
+with cells of reach 1 or 2 (chosen by a measured cost estimate in
+`choose_cells`) or by checking all pairs in small boxes; all three give the same
+pairs in the same order, so trajectories are bit-identical to 0.2.7 (checked on
+18 cases, including cells, NPT, mixtures, diatomics, gravity, water, salt).
+Only `time` and `heat_added` are summed per call and can differ in the last
+digit between chunkings. The pressure of diatomic molecules is computed when the
+observables are read (a zero-step call with `measure=1`). `molecular.c` keeps
+its molecule list, PPPM mesh and forces the same way; its list build is still
+all-pairs. Gravity keeps only its forces. `_core.neighbor_pairs` is a test helper.
+
+Native steps per second at 1 and at 500 steps per call (Apple M5 Pro, NVE from an
+equilibrated state, cutoff 2.5), before -> after: gas rho=0.1 T=2, 256 atoms
+15k/67k -> 70k/85k; 500: 4.8k/26k -> 33k/39k; 2048: 400/2460 -> 7740/8590; 4000:
+113/695 -> 3650/4030. Liquid rho=0.8 T=1, 256: 5.2k/14.0k -> 14.5k/15.1k; 500:
+1670/6380 -> 6450/6650; 2048: 206/1031 -> 1326/1350; 4000: 74/414 -> 654/662.
+In the liquid the force loop is now about 85% of a step; it was left untouched to
+keep the summation order. SPC/E water, 768 molecules: 13.3 -> 6.2 ms/step at one
+step per call. 72 Python tests and the viewer controls pass; test_chunks.py and
+the golden trajectories also pass inside Pyodide 314.0.8 under Node. Not bumped:
+`_version.py` (raise it with the release that contains this).

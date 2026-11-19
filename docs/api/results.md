@@ -60,7 +60,9 @@ runs/gas/
 ```
 
 Frame arrays include positions, unwrapped coordinates, velocities, box, step and
-time. A final checkpoint is kept even when `trajectory_every=None`.
+time: `frame["velocities"]` from `iter_frames()`, or `load_frames()["velocities"]`
+with shape (frames, atoms, 3). A final checkpoint is kept even when
+`trajectory_every=None`.
 
 ```python
 continued = sim.run(saved.state, steps=1000, storage_name="continued")
