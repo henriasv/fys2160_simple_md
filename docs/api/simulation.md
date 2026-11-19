@@ -127,6 +127,89 @@ session. Completed and interrupted runs have a final state; failed runs do not.
 `sim.settings` returns the default controls; `sim.pair_potential`, `.epsilon`,
 `.sigma`, `.charge` and similar read-only properties return the interactions.
 
+## Advance a run yourself
+
+`sim.run` takes all its steps and saves the result. `sim.start` gives the same
+run **in memory**, for you to advance a few steps at a time: in a loop of your
+own, behind a live plot, or from a web page. It writes no files.
+
+```python
+from fys2160_md import FCC, MDSimulation
+
+sim = MDSimulation(
+    pair_potential="lj",
+    epsilon=1,
+    sigma=1,
+    ensemble="nvt",
+    temperature=2,
+    timestep=0.005,
+    cutoff=2.5,
+)
+live = sim.start(FCC(N=500, rho=0.1))
+while live.step < 2000:
+    live.advance(10)                       # 10 MD steps
+    if live.step == 1000:
+        live.set(temperature=1)            # thermostat target from here on
+    if live.step % 100 == 0:
+        print(live.step, live.observables["temperature"])
+
+speeds = (live.velocities**2).sum(axis=1)**0.5
+cooled = sim.run(
+    live.state,
+    steps=5000,
+    thermo_every=100,
+    trajectory_every=500,
+    storage_name="cooled",
+)
+```
+
+```python
+live = sim.start(state, *, timestep=None, ensemble=None, temperature=None,
+                 pressure=None, heat_rate=None, coulomb_cutoff=None,
+                 kspace_accuracy=None, seed=None)
+```
+
+The arguments are those of `run` that are not about output: the state is
+copied, omitted controls take the constructor's values, and a state without
+velocities gets random ones. The result is a `LiveRun`:
+
+| Member | Meaning |
+|---|---|
+| `live.advance(steps)` | Take this many MD steps (a nonnegative integer) |
+| `live.observables` | Dictionary of the current thermodynamic quantities: the columns `run` records in `thermo.csv` |
+| `live.positions`, `live.velocities` | Read-only (atoms, 3) snapshots; positions are wrapped into a periodic box |
+| `live.box` | Read-only snapshot of the three box lengths, as in a saved frame |
+| `live.step`, `live.time` | Clock, continuing from the state's |
+| `live.set(timestep=, ensemble=, temperature=, pressure=, heat_rate=)` | Change controls for the steps that follow; omitted ones keep their values |
+| `live.settings` | The controls now in force |
+| `live.state` | The current state, an independent `System`: pass it to `sim.run` or `sim.start` |
+
+**How the steps are divided between calls does not change the trajectory.**
+Advancing 1000 steps one at a time, in tens, or in one call gives the same
+positions and velocities bit for bit, and so does `sim.run`, which is this loop
+with files. Continuing from `live.state` matches going on with `live`. Only the
+`time` and `heat_added` values are summed per call and may differ in the last digit.
+
+`live.set(...)` has the effect of a new run started from `live.state` with those
+controls: a new temperature or pressure is the target from the next step (a
+step change, not a ramp) and velocities are not reset. The controls are checked
+together, so `live.set(ensemble="nve", heat_rate=2)` is one valid change. The
+simulation's own defaults (`sim.settings`) are not affected. Interactions,
+cutoff, friction and `deform` cannot be changed on a live run; start another
+from `live.state`.
+
+Arrays are snapshots: they do not change when the run advances, and editing the
+run through them is not possible. To change velocities, take the state and use
+[`state.with_velocities`](system.md#reverse-or-perturb-velocities).
+
+A keyboard interrupt stops `advance` after a whole step and is raised again, so
+your loop ends and the run remains usable. After a numerical failure the run
+cannot continue; start again from an earlier state.
+
+The solver keeps its neighbour list and forces between calls, so short calls are
+cheap: one step per call runs within about 15% of the rate of 500 steps per call
+for a dilute gas, and within a few percent for a liquid.
+
 ## Live view
 
 ```python

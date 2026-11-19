@@ -56,6 +56,9 @@ result.view()  # Interactive replay in a notebook.
 Use `show=True, max_fps=20` on a run for live notebook visualization.
 Continue with `sim.run(result.state, ...)`: each run starts from the state you
 pass and never changes it, so one state can start several experiments.
+`live = sim.start(state)` gives a run in memory to advance yourself, a few
+steps at a time with `live.advance(10)`, reading `live.observables` and
+`live.positions` in between.
 Saved trajectories remain replayable after restarting Python. Reusing a
 `storage_name` overwrites that result. LJ systems use reduced units; water uses
 LAMMPS `real` units (Å, fs, kcal/mol, K, atm).

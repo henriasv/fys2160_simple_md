@@ -91,6 +91,20 @@ molecular models is deliberately rejected. The implementation checks energy,
 pressure and kinetic-temperature behavior, but this initial validation does not
 establish precision ensemble statistics near phase transitions.
 
+### Neighbour list
+
+Lennard-Jones forces are summed over a list of the pairs within
+`cutoff + skin`. The list is kept for as long as a run lives, also between
+calls of `live.advance`, and is rebuilt when some atom has moved more than half
+the skin since the last build (scaled with the box under pressure control). It
+is built with cells, in a time proportional to the number of atoms, when the box
+is large enough for that to save work: at least three cells of that width along
+each side, or five of half that width. Smaller boxes check every pair. Both
+give the same pairs in the same order, so the
+forces, summed in that order, do not depend on how the list was built or when.
+Water and charged systems list molecule pairs by checking every pair; gravity
+sums all pairs directly.
+
 References for the algorithms and model definitions:
 [BAOAB](https://arxiv.org/abs/1203.5428),
 [constrained Langevin integration](https://pmc.ncbi.nlm.nih.gov/articles/PMC4893190/),
@@ -166,10 +180,13 @@ python -m unittest discover -s tests
 node tests/test_viewer.cjs
 ```
 
-The 46 Python checks cover pair forces against analytical derivatives, periodic
+The 72 Python checks cover pair forces against analytical derivatives, periodic
 boundaries, neighbor lists against brute-force sums, timestep convergence, rigid
 constraints, thermodynamic sampling, energy addition, checkpoint restart, named
-storage, pacing invariance, and both geometry constructors.
+storage, pacing invariance, and both geometry constructors. They also check that
+a run advanced in calls of 1, 7 or 500 steps gives the same trajectory bit for
+bit, that reversed velocities retrace the motion, and that the cell-built
+neighbour list equals the all-pairs one.
 
 The viewer checks cover camera gestures, physical particle sizing, display scaling
 and cleanup. `python tests/preview_viewer.py /tmp/depth.html` writes a browser
