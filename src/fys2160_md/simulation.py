@@ -10,7 +10,7 @@ import time
 import numpy as np
 from . import _core
 from .system import System, MODELS, WALLS, _positive, _integer, _readonly
-from .walls import Piston, external_terms, piston_config
+from .walls import external_terms, piston_config
 from .results import Run, write_json
 from .species import parameter, per_atom, charges as _charges
 from .bonds import bond_config

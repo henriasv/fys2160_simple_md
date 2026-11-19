@@ -63,7 +63,9 @@ Saved trajectories remain replayable after restarting Python. Reusing a
 `storage_name` overwrites that result. LJ systems use reduced units; water uses
 LAMMPS `real` units (Å, fs, kcal/mol, K, atm).
 
-The engine supports atomic LJ, flexible and rigid diatomics, rigid SPC/E and
+The engine supports atomic LJ in three dimensions or two, in a periodic box or
+between walls that record the force on them, with a piston that records its
+work; flexible and rigid diatomics, rigid SPC/E and
 TIP4P-type water with PPPM long-range electrostatics, NVE/NVT and NPH/NPT for
 atoms and water, box expansion, plus controlled heating. It has no LAMMPS or
 Atomify runtime dependency. See [Water and electrostatics](https://henriasv.github.io/fys2160_simple_md/water/).
@@ -99,6 +101,33 @@ node tests/pyodide_smoke.mjs dist/*wasm32.whl
 Developed for FYS2160. Public examples are independent demonstrations; course
 exercise sheets, lab solutions and their development history remain in the
 private teaching-materials repository.
+
+## A flat box with walls and a piston
+
+```python
+from fys2160_md import Random, MDSimulation, Piston
+
+gas = Random(N=200, box=(100, 100), boundary="walls", min_distance=1.0)   # two lengths: a flat box
+sim = MDSimulation(pair_potential="lj", ensemble="nvt", temperature=2.0,
+                   timestep=0.005, cutoff=2.5, friction=0.05)
+settled = sim.run(gas, steps=20_000, thermo_every=200, trajectory_every=None,
+                  storage_name="flat-gas")
+stroke = sim.run(settled.state, steps=200_000, ensemble="nve",
+                 piston=Piston("right", to=50, speed=0.05),
+                 thermo_every=200, trajectory_every=2000, storage_name="stroke")
+thermo = stroke.thermo
+print(thermo.temperature.iloc[[0, -1]].round(2).tolist(), thermo.work.iloc[-1].round(1))
+```
+
+Positions and velocities have two columns, the temperature is `K / N`, and
+`volume` is the area. `boundary="walls"` puts a wall on every face (or one word
+per axis, also in three dimensions). For each wall the thermo table has the
+force on it now (`wall_force_right`, positive outwards) and the momentum it has
+received (`wall_impulse_right`); the mean force between two rows is the
+difference in impulse over the difference in time. A `Piston` moves a wall at
+constant speed and stops; `work` is the work it has done on the gas, which
+equals the change in `total_energy` when the thermostat is off. See
+[Flat boxes, walls and pistons](https://henriasv.github.io/fys2160_simple_md/walls/).
 
 ## Diatomic molecules
 

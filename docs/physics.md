@@ -41,7 +41,10 @@ not constitute a bit-for-bit reproduction of the Atomify input files. Molecular 
 ### Temperature, pressure and heating
 
 `T = 2K/g`, with `g = 3N_atoms - 3` for flexible/atomic models and one fewer
-DOF per rigid bond. Total centre-of-mass momentum is zero. For periodic LJ, atomic pressure is
+DOF per rigid bond. Total centre-of-mass momentum is zero. In a flat system or
+between walls, `g` is the number of atoms times the dimension, less one for each
+periodic direction: `2N` in a flat box with walls all round
+([walls](walls.md)); the flat pressure is `(2K + sum(r_ij · F_ij))/(2A)`. For periodic LJ, atomic pressure is
 `(2K + sum(r_ij · F_ij))/(3V)`.
 
 Molecular pressure uses centre-of-mass translational kinetic energy plus the
@@ -180,13 +183,16 @@ python -m unittest discover -s tests
 node tests/test_viewer.cjs
 ```
 
-The 72 Python checks cover pair forces against analytical derivatives, periodic
+The 91 Python checks cover pair forces against analytical derivatives, periodic
 boundaries, neighbor lists against brute-force sums, timestep convergence, rigid
 constraints, thermodynamic sampling, energy addition, checkpoint restart, named
 storage, pacing invariance, and both geometry constructors. They also check that
 a run advanced in calls of 1, 7 or 500 steps gives the same trajectory bit for
 bit, that reversed velocities retrace the motion, and that the cell-built
-neighbour list equals the all-pairs one.
+neighbour list equals the all-pairs one. For flat systems, walls and pistons
+they check energy conservation, that each wall takes up exactly the momentum
+the gas loses to it, the force on a wall against N k T / L, and the piston's
+work against the change in energy; see [Flat boxes, walls and pistons](walls.md#validation).
 
 The viewer checks cover camera gestures, physical particle sizing, display scaling
 and cleanup. `python tests/preview_viewer.py /tmp/depth.html` writes a browser

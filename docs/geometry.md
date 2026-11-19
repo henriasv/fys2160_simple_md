@@ -81,11 +81,21 @@ sim = MDSimulation(
 result = sim.run(pair, steps=1000, thermo_every=10, trajectory_every=100, storage_name="pair")
 ```
 
-Inputs are copied. Explicit velocities must have zero total momentum. Diatomic
+Inputs are copied. Explicit velocities must have zero total momentum (along periodic directions). Diatomic
 partners must be consecutive; rigid bonds must satisfy the length and tangency
 constraints. The solver requires every box length to exceed twice its cutoff.
 
 See the [System reference](api/system.md) for all defaults.
+
+## A flat box, and walls
+
+```python
+gas = Random(N=200, box=(100, 100), boundary="walls", min_distance=1.0)
+```
+
+Two box lengths make a two-dimensional system; `boundary="walls"` replaces the
+periodic images by walls that record the force on them. See
+[Flat boxes, walls and pistons](walls.md).
 
 ## Mixtures
 

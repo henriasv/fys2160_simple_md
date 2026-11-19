@@ -23,6 +23,7 @@ nav:
   - Installation: installation.md
   - Build a system: geometry.md
   - Water and electrostatics: water.md
+  - Flat boxes, walls and pistons: walls.md
 - Examples:
   - Recipes: examples/index.md
   - Executed notebook: examples/notebook.md

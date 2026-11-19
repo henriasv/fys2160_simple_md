@@ -24,13 +24,13 @@ SEEDS = range(34, 34+(int(sys.argv[1]) if len(sys.argv) > 1 else 8))
 
 def second_virial(T, cutoff=2.5):
     """B2 of the flat Lennard-Jones gas (cut and shifted): -pi * integral of (exp(-u/T) - 1) r dr."""
-    r = np.linspace(1e-4, cutoff, 400001)
+    r = np.linspace(1e-4, cutoff, 20001)
     u = 4*(r**-12-r**-6)-4*(cutoff**-12-cutoff**-6)
     f = (np.exp(-u/T)-1)*r
     return float(-np.pi*np.sum(.5*(f[1:]+f[:-1])*np.diff(r)))
 
 
-def adiabat_ratio(T0=2., rho0=.02, rho1=.04, steps=2000):
+def adiabat_ratio(T0=2., rho0=.02, rho1=.04, steps=200):
     """T1/T0 along the adiabat of the flat gas with its second virial coefficient:
     P = rho T (1 + B2 rho) and U/N = T - T^2 rho dB2/dT, with dU = -P dV."""
     h = 1e-3

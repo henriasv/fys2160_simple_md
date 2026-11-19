@@ -24,7 +24,8 @@ MDSimulation(*, pair_potential="lj", epsilon=1., sigma=1.,
              G=1., softening=.05, skin=None, friction=None, pressure=None,
              pressure_time=None, heat_rate=0., seed=87287, output_dir="runs",
              storage_name="simulation", units="reduced", charge=None,
-             coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True)
+             coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True,
+             wall_stiffness=1e4)
 ```
 
 | Setting | Meaning |
@@ -50,6 +51,7 @@ MDSimulation(*, pair_potential="lj", epsilon=1., sigma=1.,
 | `coulomb_cutoff` | Real-space Ewald cutoff; defaults to `cutoff` |
 | `kspace_accuracy` | Relative PPPM force accuracy, default 1e-5 |
 | `lj_shift` | True subtracts the Lennard-Jones energy at the cutoff; False is the plain truncated potential (water, charges and real units only) |
+| `wall_stiffness` | For a state with [walls](../walls.md): an atom a depth d beyond a wall is pushed back with the force `wall_stiffness*d**2` |
 
 In real units (water), `temperature` (K), `timestep` (fs) and `cutoff` (Å) must be
 given, and `pressure` (atm) for npt/nph. See [Water and electrostatics](../water.md).
@@ -67,8 +69,8 @@ Per-species dictionaries must match the species of the state that is run.
 run = sim.run(state, steps=1000, *, timestep=None, ensemble=None,
               temperature=None, pressure=None, heat_rate=None,
               coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None,
-              thermo_every=100, trajectory_every=500, show=False, max_fps=None,
-              frame_every=100, storage_name=None)
+              piston=None, thermo_every=100, trajectory_every=500, show=False,
+              max_fps=None, frame_every=100, storage_name=None)
 ```
 
 | Argument | Meaning |
@@ -80,6 +82,7 @@ run = sim.run(state, steps=1000, *, timestep=None, ensemble=None,
 | `coulomb_cutoff`, `kspace_accuracy` | Electrostatics settings of a charged system for this run |
 | `deform` | nve/nvt only: scale every box length linearly to this factor by the end of the run, moving whole molecules |
 | `seed` | Restart the thermostat's random sequence (and set random velocities) for this run |
+| `piston` | For a state with walls: `Piston("right", to=50, speed=0.05)` moves that wall at constant speed to the position `to`, where it stops ([pistons](../walls.md#a-piston)) |
 | `thermo_every` | Record thermodynamic quantities at this interval, in steps |
 | `trajectory_every` | Save particle frames at this interval; None disables frames |
 | `show` | Display one live notebook widget while running |
@@ -166,7 +169,7 @@ cooled = sim.run(
 ```python
 live = sim.start(state, *, timestep=None, ensemble=None, temperature=None,
                  pressure=None, heat_rate=None, coulomb_cutoff=None,
-                 kspace_accuracy=None, seed=None)
+                 kspace_accuracy=None, seed=None, piston=None)
 ```
 
 The arguments are those of `run` that are not about output: the state is
@@ -176,11 +179,11 @@ velocities gets random ones. The result is a `LiveRun`:
 | Member | Meaning |
 |---|---|
 | `live.advance(steps)` | Take this many MD steps (a nonnegative integer) |
-| `live.observables` | Dictionary of the current thermodynamic quantities: the columns `run` records in `thermo.csv` |
-| `live.positions`, `live.velocities` | Read-only (atoms, 3) snapshots; positions are wrapped into a periodic box |
-| `live.box` | Read-only snapshot of the three box lengths, as in a saved frame |
+| `live.observables` | Dictionary of the current thermodynamic quantities: the columns `run` records in `thermo.csv`, with the wall forces, impulses and `work` for a state with [walls](../walls.md) |
+| `live.positions`, `live.velocities` | Read-only (atoms, 3) snapshots, or (atoms, 2) for a flat system; positions are wrapped into the box along periodic directions |
+| `live.box` | Read-only snapshot of the box lengths (three, or two for a flat system), as in a saved frame; a piston changes it |
 | `live.step`, `live.time` | Clock, continuing from the state's |
-| `live.set(timestep=, ensemble=, temperature=, pressure=, heat_rate=)` | Change controls for the steps that follow; omitted ones keep their values |
+| `live.set(timestep=, ensemble=, temperature=, pressure=, heat_rate=, piston=)` | Change controls for the steps that follow; omitted ones keep their values |
 | `live.settings` | The controls now in force |
 | `live.state` | The current state, an independent `System`: pass it to `sim.run` or `sim.start` |
 
