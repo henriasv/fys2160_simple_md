@@ -8,12 +8,25 @@ statistical physics. Create a system, run it, then analyse or replay saved resul
 **[NPT temperature sweep](https://henriasv.github.io/fys2160_simple_md/examples/isobar/)**
 
 ```sh
+python -m pip install "fys2160-simple-md[notebook]"
+```
+
+Requires Python 3.10+. Releases on [PyPI](https://pypi.org/project/fys2160-simple-md/)
+carry ready-built wheels for Windows, macOS and Linux, so no compiler is needed, and
+a WebAssembly wheel that runs in the browser through Pyodide. The Python import is
+`fys2160_md`.
+
+Until the first release is on PyPI, pip cannot find the package by name. Install
+from GitHub instead, which needs Git and a C compiler (Xcode command-line tools on
+macOS, the usual build tools and Python headers on Linux, Visual Studio Build Tools
+on Windows):
+
+```sh
 python -m pip install "fys2160-simple-md[notebook] @ git+https://github.com/henriasv/fys2160_simple_md.git"
 ```
 
-Requires Python 3.10+, Git and a C compiler. On macOS install Xcode command-line
-tools; on Linux install the usual build tools and Python development headers.
-The Python import is `fys2160_md`.
+See [Installation](https://henriasv.github.io/fys2160_simple_md/installation/) for
+fixed versions and use in the browser.
 
 ```python
 from fys2160_md import FCC, Random, MDSimulation, Run
@@ -67,6 +80,18 @@ python -m mkdocs serve
 GitHub Actions runs the tests, executes the short example notebook and publishes
 the documentation to GitHub Pages on pushes to `main`. The published notebook
 is static HTML: particle trajectories play entirely in the browser, without a kernel.
+
+A second workflow, `.github/workflows/wheels.yml`, builds wheels for Windows, macOS,
+Linux and the browser with cibuildwheel and tests each one. It publishes to PyPI only
+for a version tag: raise `src/fys2160_md/_version.py`, then push the tag `vX.Y.Z`.
+To check the browser wheel locally, in a Python 3.14 environment:
+
+```sh
+python -m pip install pyodide-build
+pyodide build .
+npm install --no-save pyodide@314.0.8
+node tests/pyodide_smoke.mjs dist/*wasm32.whl
+```
 
 Developed for FYS2160. Public examples are independent demonstrations; course
 exercise sheets, lab solutions and their development history remain in the
