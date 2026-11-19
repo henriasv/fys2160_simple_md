@@ -1,0 +1,106 @@
+name: Build wheels and publish releases
+# Builds a wheel for every supported platform and for the browser (Pyodide), runs the
+# test suite against each one, and uploads the files as workflow artifacts.
+# Publishing to PyPI happens only for a pushed version tag (v0.3.0), or for a manual
+# run with "publish" ticked. Ordinary pushes and pull requests never publish.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the built files to PyPI
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: wheels-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+jobs:
+  native:
+    name: Wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux x86_64 and aarch64, Windows x64 and arm64, macOS Intel and Apple Silicon.
+        os: [ubuntu-latest, ubuntu-24.04-arm, windows-latest, windows-11-arm, macos-15-intel, macos-15]
+    steps:
+      - uses: actions/checkout@v7
+      # Which Pythons are built, and the test command, are in pyproject.toml.
+      - uses: pypa/cibuildwheel@v4.3.5
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.os }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  pyodide:
+    name: Browser wheel (Pyodide)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Builds cp314-pyodide_wasm32 and runs the test suite in Pyodide under Node.
+      - uses: pypa/cibuildwheel@v4.3.5
+        env:
+          CIBW_PLATFORM: pyodide
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install and run the wheel in Pyodide without pandas
+        run: |
+          npm install --no-save pyodide@314.0.8
+          node tests/pyodide_smoke.mjs wheelhouse/*.whl
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-pyodide
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - name: Check that the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(python -c "exec(open('src/fys2160_md/_version.py').read()); print(__version__)")
+          test "v$version" = "$GITHUB_REF_NAME"
+      - run: python -m pip install build
+      - run: python -m build --sdist
+      - name: Build from the source distribution and test
+        run: |
+          python -m pip install dist/*.tar.gz ipython
+          python -m unittest discover -s tests
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [native, pyodide, sdist]
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/fys2160-simple-md/
+    permissions:
+      id-token: write  # PyPI trusted publishing; no stored token.
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

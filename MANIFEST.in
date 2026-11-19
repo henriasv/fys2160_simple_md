@@ -1,2 +1,3 @@
 include src/fys2160_md/*.h
 include src/fys2160_md/*.c
+include tests/*.py tests/fixtures/*.npz
