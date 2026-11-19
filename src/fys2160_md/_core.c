@@ -24,10 +24,30 @@ typedef struct {
    forces; any difference (positions, box, cutoff, atom count, pair or bond
    parameters) makes it start afresh. */
 #define WORKSPACE_SCALARS 12
+/* A direction without periodic images (a wall on its two faces, or the direction
+   a flat system lacks) is given this period: so long that the nearest image of a
+   neighbour is always the neighbour itself, and the pair loops need no branch. */
+#define NO_IMAGE 1e30
+/* One-body potentials that depend on one coordinate, one row each: kind, axis and
+   three parameters. Every term reports the force the atoms exert on it. The kinds
+   so far are the walls: kind 0 at coordinate 0 and kind 1 at box[axis], with
+   U = stiffness/3 * depth^3 for an atom that has passed the wall by depth. The
+   force, stiffness * depth^2, starts from zero without a kink, so a time step
+   that straddles the wall costs no more accuracy than one between two atoms
+   (a spring wall of the same hardness lost about ten times more energy accuracy).
+   Parameters: stiffness, speed, target. A wall of kind 1 with speed > 0 is a
+   piston: it moves towards target at that speed and stops there.
+   For each term the caller keeps three numbers: the force on it now (counted
+   outwards for a wall), the impulse it has received and the work it has done on
+   the atoms by moving; the solver adds to the last two. */
+#define EXTERNAL_MAX 8
+#define EXTERNAL_WIDTH 5
+#define EXTERNAL_SUMS 3
 typedef struct {
     Neighbors nb;
-    int n, current;
+    int n, current, externals;
     double *x, *u, *f, *tables, box[3], scalars[WORKSPACE_SCALARS], potential, virial;
+    double external[EXTERNAL_MAX*EXTERNAL_WIDTH], external_force[EXTERNAL_MAX];
     size_t table_size[2];
 } Workspace;
 static const char WORKSPACE[] = "fys2160_md._core.workspace";
@@ -60,27 +80,33 @@ static int reserve_pairs(Pair **pairs, size_t *capacity, size_t needed) {
    0 when checking all pairs is cheaper or the box holds too few cells. The
    costs are rough times per atom in nanoseconds, measured for this code: one
    distance per candidate, and a fixed part for each run of cells that is scanned.
-   only = 1 or 2 asks for that reach whatever it costs. */
-static int choose_cells(int n, const double *box, double radius, int grid[3], int only) {
+   only = 1 or 2 asks for that reach whatever it costs. A flat system
+   (dimension 2) has one layer of cells. */
+static int choose_cells(int n, const double *box, int dimension, double radius, int grid[3], int only) {
     double best = only ? HUGE_VAL : 0.55 * n;
     int reach = 0;
     for (int k = 1; k <= 2; ++k) {
         if (only && only != k) continue;
-        int g[3], width = 2*k + 1, fits = 1, limit = (int)cbrt(4.0*k*k*k*n) + 1;
-        for (int d = 0; d < 3; ++d) {
+        int g[3] = {1, 1, 1}, width = 2*k + 1, fits = 1, scanned = dimension == 3 ? width*width : width;
+        int limit = (int)(dimension == 3 ? cbrt(4.0*k*k*k*n) : sqrt(4.0*k*k*n)) + 1;
+        for (int d = 0; d < dimension; ++d) {
             /* The margin keeps rounding of cell indices from hiding a pair. */
             double count = floor(box[d] * k / (radius * (1 + 1e-9)));
             g[d] = count < limit ? (int)count : limit;
             if (g[d] < width) fits = 0;
         }
         if (!fits) continue;
-        double cost = 8.0*width*width + 0.9*width*width*width*n/((double)g[0]*g[1]*g[2]);
+        double cost = 8.0*scanned + 0.9*scanned*width*n/((double)g[0]*g[1]*g[2]);
         if (cost < best) { best = cost; reach = k; memcpy(grid, g, sizeof g); }
     }
     return reach;
 }
-static int build_with_cells(Neighbors *nb, int n, const double *x, const double *box,
-                            double rmax2, const int grid[3], int reach) {
+/* box gives the extent the cells divide, period the image distances: the same
+   numbers, except NO_IMAGE in a direction that is not periodic. There an atom
+   beyond a wall is put in the outermost cell, which is at least as near to its
+   neighbours as the atom is. */
+static int build_with_cells(Neighbors *nb, int n, const double *x, const double *box, const double *period,
+                            int dimension, const int *periodic, double rmax2, const int grid[3], int reach) {
     int cells = grid[0]*grid[1]*grid[2];
     if (cells + 1 > nb->first_capacity) {
         int *first = realloc(nb->first, ((size_t)cells + 1) * sizeof(int));
@@ -94,8 +120,10 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
     double *sorted = nb->sorted;
     memset(first, 0, ((size_t)cells + 1) * sizeof(int));
     for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
+        if (d >= dimension) { cell[3*i+d] = 0; continue; }
         double t = x[3*i+d] / box[d];
-        int c = (int)((t - floor(t)) * grid[d]);
+        t = periodic[d] ? t - floor(t) : t < 0 ? 0 : t > 1 ? 1 : t;
+        int c = (int)(t * grid[d]);
         cell[3*i+d] = c < grid[d] ? c : grid[d] - 1;
     }
     for (int i = 0; i < n; ++i) ++first[(cell[3*i+2]*grid[1] + cell[3*i+1])*grid[0] + cell[3*i] + 1];
@@ -111,16 +139,20 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
        by i afterwards leaves the partners of each i in rising order too. The
        product with 1/box picks another image than the solver's division only for
        a separation of half a box, which is beyond the radius when cells are used. */
-    const double inverse[3] = {1/box[0], 1/box[1], 1/box[2]};
+    const double inverse[3] = {1/period[0], 1/period[1], 1/period[2]};
+    const int reach2 = dimension == 3 ? reach : 0;
     size_t found = 0;
     for (int j = 0; j < n; ++j) {
         const double xj[3] = {x[3*j], x[3*j+1], x[3*j+2]};
         /* The cells within reach along x, as one run or as two when it wraps. */
         int low = cell[3*j] - reach, high = cell[3*j] + reach, runs = 1, run[2][2] = {{low, high}, {0, 0}};
-        if (low < 0) { runs = 2; run[0][0] = 0; run[1][0] = low + grid[0]; run[1][1] = grid[0] - 1; }
+        if (!periodic[0]) { run[0][0] = low < 0 ? 0 : low; run[0][1] = high < grid[0] ? high : grid[0] - 1; }
+        else if (low < 0) { runs = 2; run[0][0] = 0; run[1][0] = low + grid[0]; run[1][1] = grid[0] - 1; }
         else if (high >= grid[0]) { runs = 2; run[0][1] = grid[0] - 1; run[1][0] = 0; run[1][1] = high - grid[0]; }
-        for (int a2 = -reach; a2 <= reach; ++a2) for (int a1 = -reach; a1 <= reach; ++a1) {
+        for (int a2 = -reach2; a2 <= reach2; ++a2) for (int a1 = -reach; a1 <= reach; ++a1) {
             int c2 = cell[3*j+2] + a2, c1 = cell[3*j+1] + a1;
+            /* Beyond a wall there are no cells. */
+            if ((!periodic[2] && (c2 < 0 || c2 >= grid[2])) || (!periodic[1] && (c1 < 0 || c1 >= grid[1]))) continue;
             c2 += c2 < 0 ? grid[2] : c2 >= grid[2] ? -grid[2] : 0;
             c1 += c1 < 0 ? grid[1] : c1 >= grid[1] ? -grid[1] : 0;
             int row = (c2*grid[1] + c1)*grid[0];
@@ -133,7 +165,7 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
                     double r2 = 0;
                     for (int d = 0; d < 3; ++d) {
                         double dx = sorted[3*m+d] - xj[d];
-                        dx -= box[d] * nearbyint(dx * inverse[d]);
+                        dx -= period[d] * nearbyint(dx * inverse[d]);
                         r2 += dx * dx;
                     }
                     out[found] = (Pair){members[m], j};
@@ -153,20 +185,20 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
 }
 /* method: 0 checks all pairs, 1 or 2 uses cells with that reach, -1 takes the
    cheapest. All give the same list in the same order. */
-static int build_neighbors(Neighbors *nb, int n, const double *x,
-                           const double *u, const double *box, double radius, int method) {
+static int build_neighbors(Neighbors *nb, int n, const double *x, const double *u, const double *box,
+                           const double *period, int dimension, const int *periodic, double radius, int method) {
     double rmax2 = radius * radius;
-    int grid[3], reach = method ? choose_cells(n, box, radius, grid, method > 0 ? method : 0) : 0;
+    int grid[3], reach = method ? choose_cells(n, box, dimension, radius, grid, method > 0 ? method : 0) : 0;
     if (method > 0 && !reach) {
         PyErr_SetString(PyExc_ValueError, "The box is too small for cells of this reach.");
         return -1;
     }
     if (reach) {
-        if (build_with_cells(nb, n, x, box, rmax2, grid, reach) < 0) return -1;
+        if (build_with_cells(nb, n, x, box, period, dimension, periodic, rmax2, grid, reach) < 0) return -1;
     } else {
         /* In a box this small a pair half a box apart may be listed under either
            image; the two are equally far, and the forces choose their own. */
-        const double inverse[3] = {1/box[0], 1/box[1], 1/box[2]};
+        const double inverse[3] = {1/period[0], 1/period[1], 1/period[2]};
         size_t size = 0;
         for (int i = 0; i < n; ++i) {
             const double xi[3] = {x[3*i], x[3*i+1], x[3*i+2]};
@@ -176,7 +208,7 @@ static int build_neighbors(Neighbors *nb, int n, const double *x,
                 double r2 = 0;
                 for (int d = 0; d < 3; ++d) {
                     double dx = xi[d] - x[3*j+d];
-                    dx -= box[d] * nearbyint(dx * inverse[d]);
+                    dx -= period[d] * nearbyint(dx * inverse[d]);
                     r2 += dx * dx;
                 }
                 out[size] = (Pair){i, j};
@@ -186,7 +218,7 @@ static int build_neighbors(Neighbors *nb, int n, const double *x,
         nb->size = size;
     }
     memcpy(nb->reference, u, (size_t)n * 3 * sizeof(double));
-    memcpy(nb->box, box, 3*sizeof(double));
+    memcpy(nb->box, period, 3*sizeof(double));
     return 0;
 }
 static void release_workspace(Workspace *w) {
@@ -325,8 +357,9 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
     }
     return 0;
 }
+/* Positions are wrapped into the box only along periodic directions. */
 static int drift(int n, double *x, double *u, const double *v,
-                 const double *box, double duration) {
+                 const double *box, const int *periodic, double duration) {
     for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
         int k = 3*i+d;
         double dx = duration * v[k];
@@ -335,7 +368,7 @@ static int drift(int n, double *x, double *u, const double *v,
             PyErr_SetString(PyExc_FloatingPointError, "Non-finite position; simulation is unstable.");
             return -1;
         }
-        x[k] -= box[d] * floor(x[k]/box[d]);
+        if (periodic[d]) x[k] -= box[d] * floor(x[k]/box[d]);
     }
     return 0;
 }
@@ -343,20 +376,54 @@ static void kick(int n, double *v, const double *f, const double *mass, double d
     for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d)
         v[3*i+d] += dt * f[3*i+d] / mass[i];
 }
-/* The thermostat samples the canonical distribution with total momentum zero. */
+/* The thermostat samples the canonical distribution, with total momentum zero
+   along the directions that conserve it (the periodic ones; walls take up momentum). */
 static void thermostat(int n, double *v, const double *mass, double T,
-                       double gamma, double dt, uint64_t *rng) {
+                       double gamma, double dt, uint64_t *rng, int dimension, const int *conserved) {
     double c = exp(-gamma * dt), momentum[3] = {0,0,0}, totalmass = 0;
     for (int i = 0; i < n; ++i) {
         double sigma = sqrt(-expm1(-2*gamma*dt) * T / mass[i]);
         totalmass += mass[i];
-        for (int d = 0; d < 3; ++d) {
+        for (int d = 0; d < dimension; ++d) {
             v[3*i+d] = c*v[3*i+d] + sigma*gaussian(rng);
             momentum[d] += mass[i]*v[3*i+d];
         }
     }
     for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d)
-        v[3*i+d] -= momentum[d]/totalmass;
+        if (conserved[d]) v[3*i+d] -= momentum[d]/totalmass;
+}
+/* Adds the forces of the external terms to f and their energy to *potential.
+   force[t] becomes the force of the atoms on term t: for a wall, the sum over the
+   atoms that have passed it, counted positive outwards. */
+static void external_forces(int terms, const double *external, int n, const double *x,
+                            const double *box, double *f, double *potential, double *force) {
+    for (int t = 0; t < terms; ++t) {
+        const double *e = external + EXTERNAL_WIDTH*t;
+        int upper = e[0] != 0, axis = (int)e[1];
+        double stiffness = e[2], at = upper ? box[axis] : 0, side = upper ? 1 : -1, total = 0, energy = 0;
+        for (int i = 0; i < n; ++i) {
+            double depth = side * (x[3*i+axis] - at);
+            if (depth > 0) {
+                f[3*i+axis] -= side * stiffness * depth * depth;
+                total += stiffness * depth * depth; energy += stiffness * depth * depth * depth / 3;
+            }
+        }
+        force[t] = total; *potential += energy;
+    }
+}
+/* One time step of every piston: box[axis] moves towards the target and stops on
+   it. moved[t] is the displacement. The last step may be a thousandth longer, so
+   that rounding in the sum of the steps does not leave one tiny step over. */
+static void move_pistons(int terms, const double *external, double *box, double dt, double *moved) {
+    for (int t = 0; t < terms; ++t) {
+        const double *e = external + EXTERNAL_WIDTH*t;
+        int axis = (int)e[1];
+        moved[t] = 0;
+        if (e[0] == 0 || !(e[3] > 0) || box[axis] == e[4]) continue;
+        double left = e[4] - box[axis], step = e[3] * dt;
+        if (fabs(left) <= 1.001 * step) { moved[t] = left; box[axis] = e[4]; }
+        else { moved[t] = left > 0 ? step : -step; box[axis] += moved[t]; }
+    }
 }
 
 static double kinetic(int n,const double *v,const double *mass) {
@@ -396,7 +463,8 @@ static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
             v[3*(i+1)+d]-=lambda*old[d]/(mass[i+1]*inverse_mass*dt);
         }
     }
-    return drift(n,x,u,v,box,dt);
+    static const int periodic[3]={1,1,1};
+    return drift(n,x,u,v,box,periodic,dt);
 }
 /* Molecular pressure uses COM kinetic energy and intermolecular COM virial.
    It avoids noisy finite-difference constraint-force estimates for rigid bonds. */
@@ -432,18 +500,21 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
 static PyObject *advance(PyObject *self, PyObject *args) {
     (void)self;
     PyObject *objects[6], *result = NULL, *parameter_object=NULL, *bond_object=NULL, *workspace_object=NULL;
-    Py_buffer parameter_buffer={0}, bond_buffer={0};
+    PyObject *external_object=NULL, *sums_object=NULL;
+    Py_buffer parameter_buffer={0}, bond_buffer={0}, external_buffer={0}, sums_buffer={0};
     Workspace local={0}, *ws;
     const double *parameters=NULL, *bond_parameters=NULL;
     Py_buffer buffers[6] = {{0}};
     int requested, done = 0, interrupted = 0;
     double dt, cutoff, skin, T, gamma, heat, targetP, baromass, rate, potential=0, virial=0;
-    int model, pair=-1, exclude=1, measure=1;
+    int model, pair=-1, exclude=1, measure=1, dimension=3, terms=0;
+    const double *external=NULL;
+    double *sums=NULL, wall[EXTERNAL_MAX]={0}, before[EXTERNAL_MAX]={0}, moved[EXTERNAL_MAX]={0};
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOi", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOiiOO", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure, &dimension, &external_object, &sums_object)) return NULL;
     if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
@@ -510,24 +581,62 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     double *x=buffers[0].buf,*v=buffers[1].buf,*u=buffers[2].buf;
     double *f=NULL,*box=buffers[4].buf,*mass=buffers[5].buf;
-    for(int d=0;d<3;++d) if (!(box[d]>2*cutoff) || !isfinite(box[d])) {
-        PyErr_SetString(PyExc_ValueError, "Each box length must be greater than twice the cutoff.");goto cleanup;
+    if(external_object && external_object!=Py_None) {
+        if(!sums_object || PyObject_GetBuffer(external_object,&external_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT)<0 ||
+           PyObject_GetBuffer(sums_object,&sums_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT|PyBUF_WRITABLE)<0) {
+            if(!PyErr_Occurred())PyErr_SetString(PyExc_ValueError,"External terms need an array for their sums.");
+            goto cleanup;
+        }
+        if(external_buffer.ndim!=2 || external_buffer.shape[1]!=EXTERNAL_WIDTH || external_buffer.shape[0]<1 || external_buffer.shape[0]>EXTERNAL_MAX ||
+           sums_buffer.ndim!=2 || sums_buffer.shape[0]!=external_buffer.shape[0] || sums_buffer.shape[1]!=EXTERNAL_SUMS ||
+           external_buffer.itemsize!=sizeof(double) || !external_buffer.format || strcmp(external_buffer.format,"d")!=0 ||
+           sums_buffer.itemsize!=sizeof(double) || !sums_buffer.format || strcmp(sums_buffer.format,"d")!=0) {
+            PyErr_SetString(PyExc_ValueError,"External terms must be a float64 (terms,5) array with a (terms,3) array for their sums.");goto cleanup;
+        }
+        terms=(int)external_buffer.shape[0]; external=external_buffer.buf; sums=sums_buffer.buf;
     }
+    /* A direction is periodic unless the system is flat there or has walls on it. */
+    int periodic[3]={1,1,dimension==3}, everywhere=dimension==3;
+    if(dimension!=2 && dimension!=3) {PyErr_SetString(PyExc_ValueError,"The dimension must be 2 or 3.");goto cleanup;}
+    for(int t=0;t<terms;++t) {
+        const double *e=external+EXTERNAL_WIDTH*t;
+        if(!isfinite(e[0]+e[1]+e[2]+e[3]+e[4]) || (e[0]!=0 && e[0]!=1) || (e[1]!=0 && e[1]!=1 && e[1]!=2) || e[1]>=dimension ||
+           !(e[2]>0) || e[3]<0 || (e[3]>0 && (e[0]==0 || !(e[4]>0))) || !isfinite(sums[EXTERNAL_SUMS*t+1]+sums[EXTERNAL_SUMS*t+2])) {
+            PyErr_SetString(PyExc_ValueError,"Invalid wall or piston.");goto cleanup;
+        }
+        periodic[(int)e[1]]=0;
+    }
+    if((dimension==2 || terms) && (model!=0 || targetP>=0)) {
+        PyErr_SetString(PyExc_ValueError,"A flat system and walls take unbonded atoms, without pressure control.");goto cleanup;
+    }
+    double fixed[3];
+    for(int d=0;d<3;++d) {
+        if(periodic[d] ? !(box[d]>2*cutoff) || !isfinite(box[d]) : d<dimension && (!(box[d]>0) || !isfinite(box[d]))) {
+            PyErr_SetString(PyExc_ValueError, periodic[d] ? "Each box length must be greater than twice the cutoff." : "The distance between two walls must be positive.");goto cleanup;
+        }
+        fixed[d]=periodic[d]?box[d]:NO_IMAGE;
+        if(!periodic[d])everywhere=0;
+    }
+    /* The image distances: the box itself when it is periodic all round (and may
+       then change under a barostat), otherwise fixed for the call. */
+    const double *period=everywhere?box:fixed;
     for(int i=0;i<n;++i) {
         if (!(mass[i]>0) || !isfinite(mass[i])) {PyErr_SetString(PyExc_ValueError,"Masses must be positive.");goto cleanup;}
         for(int d=0;d<3;++d) if(!isfinite(v[3*i+d])) {
             PyErr_SetString(PyExc_ValueError,"State arrays must be finite.");goto cleanup;
         }
     }
-    const double scalars[WORKSPACE_SCALARS]={cutoff,skin,model,pair,exclude,epsilon,sigma,length,k2,k3,k4};
+    const double scalars[WORKSPACE_SCALARS]={cutoff,skin,model,pair,exclude,epsilon,sigma,length,k2,k3,k4,dimension};
     size_t parameter_count=parameters?(size_t)2*n:0, bond_count=bond_parameters&&model?(size_t)2*n:0;
     Neighbors *nb=&ws->nb;
-    const int continued=unchanged(ws,n,x,u,box,scalars,parameters,parameter_count,bond_parameters,bond_count);
+    const int continued=unchanged(ws,n,x,u,box,scalars,parameters,parameter_count,bond_parameters,bond_count) &&
+                        ws->externals==terms && same(ws->external,external,(size_t)terms*EXTERNAL_WIDTH);
     ws->current=0;
     if(continued) {
         /* Continue the previous call: its list and forces still hold, and the
            positions and parameters are the ones it checked. */
         f=ws->f; potential=ws->potential; virial=ws->virial;
+        memcpy(wall,ws->external_force,sizeof wall);
     } else {
         for(int k=0;k<3*n;++k) if(!isfinite(x[k])||!isfinite(u[k])) {
             PyErr_SetString(PyExc_ValueError,"State arrays must be finite.");goto cleanup;
@@ -542,7 +651,8 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         }
         if(prepare_workspace(ws,n)<0)goto cleanup;
         f=ws->f;
-        if(build_neighbors(nb,n,x,u,box,cutoff+skin,-1)<0 || forces(nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
+        if(build_neighbors(nb,n,x,u,box,period,dimension,periodic,cutoff+skin,-1)<0 || forces(nb,n,x,period,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
+        external_forces(terms,external,n,x,box,f,&potential,wall);
     }
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
     double dof=3*n-3-(model==2?n/2:0), pressure_numerator=0;
@@ -567,19 +677,32 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         }
         if(gamma>0) {
             if(model==2){if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
-            else if(drift(n,x,u,v,box,0.5*dt)<0)goto cleanup;
-            thermostat(n,v,mass,T,gamma,dt,&rng);
+            else if(drift(n,x,u,v,box,periodic,0.5*dt)<0)goto cleanup;
+            thermostat(n,v,mass,T,gamma,dt,&rng,dimension,periodic);
             if(model==2){constrain_velocities(n,v,x,box,mass);if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
-            else if(drift(n,x,u,v,box,0.5*dt)<0)goto cleanup;
+            else if(drift(n,x,u,v,box,periodic,0.5*dt)<0)goto cleanup;
         } else if(model==2){if(rigid_drift(n,x,u,v,box,mass,dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
-        else if(drift(n,x,u,v,box,dt)<0)goto cleanup;
+        else if(drift(n,x,u,v,box,periodic,dt)<0)goto cleanup;
         if(targetP>=0){
             double factor=exp(0.5*dt*rate);
             for(int d=0;d<3;++d){box[d]*=factor;if(!(box[d]>2*cutoff)){PyErr_SetString(PyExc_ValueError,"Box contracted below twice the cutoff.");goto cleanup;}}
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
-        if(needs_rebuild(nb,n,u,box,cutoff,skin) && build_neighbors(nb,n,x,u,box,cutoff+skin,-1)<0)goto cleanup;
-        if(forces(nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
+        /* The pistons move with the drift, so the forces that follow are those at
+           the new wall positions. Over the step each term receives the impulse
+           dt*(force before + force after)/2, the negative of what the two half
+           kicks give the atoms, and a wall that moved has done the work of minus
+           that mean force over its displacement. */
+        if(terms){memcpy(before,wall,sizeof wall);move_pistons(terms,external,box,dt,moved);}
+        if(needs_rebuild(nb,n,u,period,cutoff,skin) && build_neighbors(nb,n,x,u,box,period,dimension,periodic,cutoff+skin,-1)<0)goto cleanup;
+        if(forces(nb,n,x,period,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
+        if(terms) {
+            external_forces(terms,external,n,x,box,f,&potential,wall);
+            for(int t=0;t<terms;++t) {
+                double mean=0.5*(before[t]+wall[t]);
+                sums[EXTERNAL_SUMS*t+1]+=dt*mean; sums[EXTERNAL_SUMS*t+2]-=mean*moved[t];
+            }
+        }
         kick(n,v,f,mass,0.5*dt);
         if(model==2)constrain_velocities(n,v,x,box,mass);
         if(targetP>=0){
@@ -605,10 +728,18 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
     if(result) {
         memcpy(buffers[3].buf,f,(size_t)n*3*sizeof(double));
-        if(ws!=&local)remember(ws,n,x,u,box,scalars,!continued,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
+        for(int t=0;t<terms;++t)sums[EXTERNAL_SUMS*t]=wall[t];
+        if(ws!=&local) {
+            remember(ws,n,x,u,box,scalars,!continued,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
+            ws->externals=terms;
+            if(terms)memcpy(ws->external,external,(size_t)terms*EXTERNAL_WIDTH*sizeof(double));
+            memcpy(ws->external_force,wall,sizeof wall);
+        }
     }
 
 cleanup:
+    if(sums_buffer.obj)PyBuffer_Release(&sums_buffer);
+    if(external_buffer.obj)PyBuffer_Release(&external_buffer);
     if(bond_buffer.obj)PyBuffer_Release(&bond_buffer);
     if(parameter_buffer.obj)PyBuffer_Release(&parameter_buffer);
     release_workspace(&local);
@@ -719,24 +850,30 @@ cleanup:
     return result;
 }
 
-/* Test helper: the (i, j) pairs within radius, by checking all pairs (reach 0) or with cells. */
+/* Test helper: the (i, j) pairs within radius, by checking all pairs (reach 0) or with cells.
+   Optionally the dimension (z is ignored in 2) and which directions are periodic. */
 static PyObject *neighbor_pairs(PyObject *self, PyObject *args) {
     (void)self;
     PyObject *object, *result = NULL;
     Py_buffer view = {0};
     Workspace w = {0};
-    double box[3], radius;
-    int reach;
-    if (!PyArg_ParseTuple(args, "O(ddd)di", &object, &box[0], &box[1], &box[2], &radius, &reach)) return NULL;
+    double box[3], period[3], radius;
+    int reach, dimension = 3, periodic[3] = {1, 1, 1};
+    if (!PyArg_ParseTuple(args, "O(ddd)di|i(iii)", &object, &box[0], &box[1], &box[2], &radius, &reach,
+                          &dimension, &periodic[0], &periodic[1], &periodic[2])) return NULL;
     if (PyObject_GetBuffer(object, &view, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) return NULL;
     if (view.itemsize != sizeof(double) || !view.format || strcmp(view.format, "d") != 0 || view.ndim != 2 ||
         view.shape[1] != 3 || view.shape[0] < 2 || view.shape[0] > 20000 || !(radius > 0) || reach < 0 || reach > 2 ||
-        !(box[0] > 0) || !(box[1] > 0) || !(box[2] > 0)) {
+        (dimension != 2 && dimension != 3) || !(box[0] > 0) || !(box[1] > 0) || (dimension == 3 && !(box[2] > 0))) {
         PyErr_SetString(PyExc_ValueError, "Positions must be float64 (N,3), with a positive box and radius, and reach 0, 1 or 2.");
         goto cleanup;
     }
     int n = (int)view.shape[0];
-    if (prepare_workspace(&w, n) < 0 || build_neighbors(&w.nb, n, view.buf, view.buf, box, radius, reach) < 0) goto cleanup;
+    for (int d = 0; d < 3; ++d) {
+        if (d >= dimension) periodic[d] = 0;
+        period[d] = periodic[d] ? box[d] : NO_IMAGE;
+    }
+    if (prepare_workspace(&w, n) < 0 || build_neighbors(&w.nb, n, view.buf, view.buf, box, period, dimension, periodic, radius, reach) < 0) goto cleanup;
     result = PyBytes_FromStringAndSize((const char *)w.nb.pairs, (Py_ssize_t)(w.nb.size * sizeof(Pair)));
 cleanup:
     release_workspace(&w);
@@ -748,7 +885,7 @@ static PyMethodDef methods[] = {
     {"workspace", workspace, METH_NOARGS, "What one run keeps between calls: the neighbour list and the state the solver last returned."},
     {"neighbor_pairs", neighbor_pairs, METH_VARARGS, "Pairs within a radius as int (i, j) bytes, from all pairs or from cells of reach 1 or 2 (test helper)."},
     {"advance_gravity", advance_gravity, METH_VARARGS, "Advance isolated softened gravity in-place."},
-    {"advance", advance, METH_VARARGS, "Advance LJ dynamics in-place; return energy, virial, RNG, steps, interrupt flag, barostat rate and pressure numerator."},
+    {"advance", advance, METH_VARARGS, "Advance LJ dynamics in-place, in three dimensions or two, with optional walls and pistons; return energy, virial, RNG, steps, interrupt flag, barostat rate and pressure numerator."},
     {"molecular_workspace", molecular_workspace, METH_NOARGS, "What one run of charged atoms or water keeps between calls: molecule list, PPPM mesh and forces."},
     {"advance_molecular", (PyCFunction)(void(*)(void))advance_molecular, METH_VARARGS|METH_KEYWORDS, "Advance charged atoms or rigid water in-place; return a dict of energies and state."},
     {"project_molecular_velocities", project_molecular_velocities, METH_VARARGS, "Remove velocity components along rigid-water constraints in-place."},
