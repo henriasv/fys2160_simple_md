@@ -41,6 +41,7 @@ This needs WebGL 2, but no Python kernel, remote scripts or simulation server.
 | Energy | `kinetic_energy`, `potential_energy`, `total_energy` |
 | Response | `compressibility_factor`, `enthalpy`, `heat_added` |
 | Pressure control | `barostat_energy`, `extended_enthalpy` |
+| Walls | For each wall, `wall_force_<name>` (now, positive outwards) and `wall_impulse_<name>` (momentum received so far); `work` done on the atoms by moving walls; `piston_position` during a run with a piston. See [walls](../walls.md) |
 
 **Energies are totals.** Divide by N for energy per atom or molecule.
 `density` uses that same particle count; `atom_density` always counts atoms.

@@ -47,13 +47,16 @@ class Run:
         c = self.metadata['configuration']
         bond = {'bond': read_bond(c['bond'])} if 'bond' in c else {}
         with np.load(self.path/'checkpoint.npz', allow_pickle=False) as data:
+            boundary = c.get('boundary', 'periodic')
             state = System(data['positions'], data['box'], velocities=data['velocities'], masses=data['masses'],
-                           model=c['model'], boundary=c.get('boundary', 'periodic'),
+                           model=c['model'], boundary=boundary if isinstance(boundary, str) else tuple(boundary),
                            species=data['species'] if 'species' in data else None, units=c.get('units', 'reduced'),
                            unwrapped=data['unwrapped'], time=float(data['time']), step=int(data['step']), **bond)
             state._rng = int(data['rng'])
             state._heat = float(data['heat_added'])
             state._rate = float(data['barostat_rate'])
+            if 'wall_sums' in data:
+                state._wall_sums = data['wall_sums'].copy()
             if 'pppm_settings' in data:
                 accuracy, cutoff = (float(v) for v in data['pppm_settings'])
                 state._pppm = (data['pppm_state'].copy(), accuracy, cutoff)

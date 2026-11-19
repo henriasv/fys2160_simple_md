@@ -4,5 +4,6 @@ from .geometry import FCC, Random, Plummer, IceIh
 from .simulation import MDSimulation, LiveRun
 from .results import Run
 from .bonds import HarmonicBond, RigidBond, Class2Bond, RigidWater
+from .walls import Piston
 from ._version import __version__
-__all__ = ['MDSimulation', 'LiveRun', 'HarmonicBond', 'RigidBond', 'Class2Bond', 'RigidWater', 'IceIh', 'System', 'FCC', 'Random', 'Plummer', 'Run', 'Box', 'Atoms']
+__all__ = ['MDSimulation', 'LiveRun', 'Piston', 'HarmonicBond', 'RigidBond', 'Class2Bond', 'RigidWater', 'IceIh', 'System', 'FCC', 'Random', 'Plummer', 'Run', 'Box', 'Atoms']

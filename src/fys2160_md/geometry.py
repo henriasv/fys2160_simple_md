@@ -1,11 +1,12 @@
-"""Periodic geometry constructors, independent of the simulation runner."""
+"""Geometry constructors (periodic boxes and boxes with walls), independent of the simulation runner."""
 import numpy as np
 from .bonds import resolve_model, bonds_for_species, RigidWater
 from .species import species_counts, parameter, per_atom
-from .system import System, MODELS, _integer, _positive
+from .system import System, MODELS, _integer, _positive, _walled
 
 
-def _box(N, rho, box, model):
+def _box(N, rho, box, model, dimension=3):
+    """Box lengths, one per dimension. dimension=None takes it from the number of box lengths (default 3)."""
     N=_integer(N,'N',2)
     if model not in MODELS:
         raise ValueError(f'model must be one of {tuple(MODELS)}')
@@ -13,13 +14,20 @@ def _box(N, rho, box, model):
         raise ValueError('This course solver supports at most 20000 atoms.')
     if rho is not None and box is not None:
         raise ValueError('Specify rho or box, not both; N fixes the remaining quantity.')
+    given=None if box is None else np.asarray(box,dtype=float)
+    if dimension is None:
+        dimension=given.size if given is not None and given.shape==(2,) else 3
+    if dimension not in (2,3):
+        raise ValueError('dimension must be 2 or 3.')
     if box is None:
         rho=_positive(.001 if rho is None else rho,'rho')
-        lengths=np.full(3,(N/rho)**(1/3))
+        lengths=np.full(dimension,(N/rho)**(1/dimension))
     else:
-        lengths=np.broadcast_to(np.asarray(box,dtype=float),(3,)).copy()
+        if given.ndim>1 or given.size not in (1,dimension):
+            raise ValueError(f'box must be a positive side length or {dimension} positive lengths for a {dimension}-dimensional system.')
+        lengths=np.broadcast_to(given,(dimension,)).copy()
         if not np.isfinite(lengths).all() or np.any(lengths<=0):
-            raise ValueError('box must be a positive side length or three positive lengths.')
+            raise ValueError('box must be a positive side length or three positive lengths (two for a flat system).')
     return N,lengths
 
 
@@ -37,15 +45,19 @@ def _atoms(centers, lengths, model, rng, bond_lengths):
     return np.stack((centers-half_length*directions,centers+half_length*directions),axis=1).reshape(-1,3)%lengths
 
 
-def FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287):
+def FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287, boundary='periodic'):
     """Perfect periodic FCC sites at rho+N or box+N; the default box is cubic.
 
     A scalar box is a cube side length; a triple gives rectangular box lengths.
     N counts atoms, or molecular centres for a diatomic model. Cubes require
     N=4*n**3. Rectangular boxes must fit integer conventional cells of equal size.
+    boundary="walls" (atoms only) keeps the same sites and replaces the periodic
+    images by walls on the faces of the box; see System.
     """
     N, labels = species_counts(N, species)
     model, bond = resolve_model(model, molecule, bond)
+    if box is not None and np.shape(box)==(2,):
+        raise ValueError('FCC is a three-dimensional lattice; use Random(box=(Lx, Ly)) for a flat system.')
     N,lengths=_box(N,rho,box,model)
     specs = () if model=='atomic' else bonds_for_species(bond, labels)
     if any(b.length >= min(lengths)/2 for b in specs):
@@ -66,7 +78,7 @@ def FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, spe
     bases=np.array([[0,0,0],[0,.5,.5],[.5,0,.5],[.5,.5,0]])
     sites=(np.indices(tuple(cells)).reshape(3,-1).T[:,None,:]+bases).reshape(-1,3)
     centers=(sites+.25)*lattice_constant
-    return System(_atoms(centers,lengths,model,rng,bond_lengths),lengths,model=model,bond=bond,species=labels,masses=mass_values)
+    return System(_atoms(centers,lengths,model,rng,bond_lengths),lengths,model=model,bond=bond,species=labels,masses=mass_values,boundary=boundary)
 
 
 def _water_molecules(centers, water, rng, masses):
@@ -85,7 +97,8 @@ def _water_molecules(centers, water, rng, masses):
 
 
 def Random(*, N=None, rho=None, box=None, min_distance=None, max_attempts=1000,
-           molecule=None, bond=None, model=None, species=None, masses=None, seed=87287):
+           molecule=None, bond=None, model=None, species=None, masses=None, seed=87287,
+           dimension=None, boundary='periodic'):
     """Self-avoiding random placement with periodic minimum-image distances.
 
     min_distance is the minimum separation between atoms of different molecules,
@@ -93,11 +106,19 @@ def Random(*, N=None, rho=None, box=None, min_distance=None, max_attempts=1000,
     Failed packing raises an error rather than reducing this distance.
     max_attempts bounds trials for each particle.
 
+    A box with two lengths, ``box=(Lx, Ly)``, or ``dimension=2`` gives a flat,
+    two-dimensional system of atoms (rho is then atoms per area).
+    ``boundary="walls"`` puts a wall on every face instead of periodic images;
+    one word per axis, such as ``("walls", "periodic")``, chooses for each axis.
+    Atoms start at least half of min_distance from a wall. See System.
+
     molecule="water" places randomly oriented rigid waters (species "O" and "H")
     in LAMMPS real units: N molecules, box in Å or rho in molecules per Å^3
     (0.0334 is about 1 g/cm^3), masses in g/mol.
     """
     if molecule == 'water' or model == 'water-rigid':
+        if dimension not in (None, 3) or boundary != 'periodic':
+            raise ValueError('Water is three-dimensional and periodic.')
         return _random_water(N=N, rho=rho, box=box, min_distance=1.8 if min_distance is None else min_distance,
                              max_attempts=max_attempts, model=model, molecule=molecule, bond=bond, species=species,
                              masses=masses, seed=seed)
@@ -105,7 +126,11 @@ def Random(*, N=None, rho=None, box=None, min_distance=None, max_attempts=1000,
     masses = 1. if masses is None else masses
     N, labels = species_counts(N, species)
     model, bond = resolve_model(model, molecule, bond)
-    N,lengths=_box(N,rho,box,model)
+    N,lengths=_box(N,rho,box,model,dimension)
+    D=len(lengths)
+    walled=np.array(_walled(boundary,D))
+    if model!='atomic' and (D==2 or walled.any() or boundary=='open'):
+        raise ValueError('A flat system and walls currently take unbonded atoms only.')
     specs = () if model=='atomic' else bonds_for_species(bond, labels)
     if any(b.length >= min(lengths)/2 for b in specs):
         raise ValueError('Bond length must be less than half the shortest box side.')
@@ -117,19 +142,24 @@ def Random(*, N=None, rho=None, box=None, min_distance=None, max_attempts=1000,
     labels = np.repeat(labels, 1 if model == 'atomic' else 2)
     mass_values = per_atom(parameter(masses, tuple(dict.fromkeys(labels.tolist())), 'masses'), labels)
     per_particle=1 if model=='atomic' else 2
-    positions=np.empty((N*per_particle,3),dtype=float)
+    positions=np.empty((N*per_particle,D),dtype=float)
+    # Between walls an atom starts at least half the distance from each wall, and
+    # distances across a wall are not shortened by a periodic image.
+    margin=np.where(walled,.5*distance,0.)
+    if np.any(lengths<=2*margin):
+        raise ValueError('The walls are closer together than min_distance.')
     for i in range(N):
         for _ in range(attempts):
-            center=rng.uniform(0,lengths,size=(1,3))
+            center=rng.uniform(0,lengths,size=(1,D)) if not walled.any() else rng.uniform(margin,lengths-margin,size=(1,D))
             candidate=_atoms(center,lengths,model,rng,bond_lengths[i:i+1])
             dr=candidate[:,None,:]-positions[None,:i*per_particle,:]
-            dr-=lengths*np.rint(dr/lengths)
+            dr[...,~walled]-=lengths[~walled]*np.rint(dr[...,~walled]/lengths[~walled])
             if np.all(np.sum(dr*dr,axis=2)>=distance**2):
                 positions[i*per_particle:(i+1)*per_particle]=candidate
                 break
         else:
             raise ValueError(f'Could only place {i} of {N} particles with min_distance={distance:g}. Lower rho, enlarge the box, reduce min_distance explicitly, or use FCC for a dense crystal.')
-    return System(positions,lengths,model=model,bond=bond,species=labels,masses=mass_values)
+    return System(positions,lengths,model=model,bond=bond,species=labels,masses=mass_values,boundary=boundary)
 
 
 def Plummer(*, N=256, scale_radius=1., mass=1., G=1., softening=.05, seed=87287):

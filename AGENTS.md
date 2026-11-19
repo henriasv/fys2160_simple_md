@@ -17,6 +17,12 @@ This repository contains the standalone course MD package. Python import:
   `observables` and as keywords of `start`/`set`, not in new methods.
 - `state.with_velocities(v)` and `state.with_box(box)` return changed copies;
   states are never edited in place.
+- Two dimensions and walls (atoms in reduced units only): a box with two lengths
+  is flat; `boundary="walls"` or one word per axis. The solver always works on
+  (N,3) arrays; a flat system has z = 0 and box[2] = 0 inside `System`/`_Engine`
+  and two columns in everything public. Walls and pistons are rows of the
+  solver's table of one-body terms (`walls.py`, `external_forces` in `_core.c`);
+  a new external potential is a new row kind there, reported like a wall.
 - The solver keeps a workspace per run (neighbour list, forces, the state it last
   returned) and reuses it only when its inputs are bit-for-bit unchanged. A new
   force input must be added to that comparison (`scalars`/tables in `_core.c`,
@@ -285,3 +291,73 @@ keep the summation order. SPC/E water, 768 molecules: 13.3 -> 6.2 ms/step at one
 step per call. 72 Python tests and the viewer controls pass; test_chunks.py and
 the golden trajectories also pass inside Pyodide 314.0.8 under Node. Not bumped:
 `_version.py` (raise it with the release that contains this).
+
+2026-11-19 (0.3.0, branch claude/2d-walls-piston-e91426): flat systems, walls and a
+piston, for the week 34 session. Public surface: `Random(N=200, box=(100, 100),
+boundary="walls")` (two lengths, or `dimension=2`, make a flat system; `boundary` is
+"periodic", "walls", or one of the two per axis, also on `FCC` and `System`);
+`state.dimension`, `state.walls` (names: left/right for x, bottom/top for y, back/front
+for z, at 0 and at the box length); `MDSimulation(wall_stiffness=1e4)`;
+`Piston(wall, to, speed)` as the keyword `piston` of `run`, `start` and `set`;
+observables `wall_force_<name>` (now, positive outwards), `wall_impulse_<name>`
+(momentum delivered so far), `work` (done on the atoms by moving walls) and
+`piston_position`. `live.settings` has `piston` only for a state with walls.
+`with_box` between walls keeps the atoms and moves the far wall. Docs: `docs/walls.md`.
+
+How it is built. `_core.advance` takes three more optional arguments: the dimension,
+a float64 (terms, 5) table of one-body terms (kind, axis, stiffness, speed, target) and
+a (terms, 3) array the solver writes (force now, impulse, work). A direction without
+periodic images (walls, or z of a flat system) gets the period `NO_IMAGE` (1e30), so
+`forces` and the list build keep their unbranched minimum image, and a periodic 3D run
+is bit-identical to 0.2.8 (golden trajectories and the two live scenes checked). `drift`
+wraps only periodic directions; the thermostat adds noise in `dimension` directions and
+removes the total momentum only along periodic ones; `System.dof` counts likewise, so
+`T = K/N` exactly in a flat box with walls. Cells: a flat system has one layer; an atom
+beyond a wall goes into the outermost cell. The wall is U = stiffness*d^3/3 for an atom a
+depth d beyond it. A spring wall (d^2) was tried first: its kink in the force costs
+energy accuracy at every step that straddles the wall (rms energy change 0.64 against
+0.05 over 1000 time units for 200 atoms at T* = 2, at equal hardness). A piston is an
+upper wall (kind 1) with speed > 0: `move_pistons` changes box[axis] each step, towards
+the target, statelessly (the schedule is a function of the box and the controls), so
+chunked and chained runs are bitwise equal. Impulse and work use the trapezoid of the
+force before and after the step, which is exactly what the two half kicks give the atoms.
+The external table and the wall forces are part of the workspace comparison. The
+impulses and the work are carried in the state (`System._wall_sums`, checkpoint
+`wall_sums`), like `heat_added`.
+
+Not done, on purpose: pressure control, molecules, charges and real units in a flat box
+or between walls (rejected with a message); a piston on a wall at 0 (the box origin is
+fixed); several pistons at once (the solver could, `piston=` takes one); 2D lattices;
+external potentials other than walls (gravity, a bias, a double well, a step: add a row
+kind in `external_forces`, an object in `walls.py` that makes the row, and observables
+under its name); a thermostat on a region. The `pressure` observable between walls is
+the pair-virial pressure and leaves out the walls' own virial; it agrees with the wall
+force per length on average. The Langevin thermostat at the default friction 1 turns a
+dilute gas into a random walk (correct averages, slow wall-force statistics): the week 34
+scenes use `friction=0.05`.
+
+Viewer: a flat system has box thickness 0 and opens face-on to the xy plane in either
+projection. Across an axis with walls the view is centred on the first frame's box, not
+each frame's (`centre`, `reach` in `viewer.js`), so the wall at 0 stays put and a piston
+moves; periodic boxes stay centred as before. Checked in a browser with OMOVI.
+
+`examples/week34/` holds drafts of the two scenes for the session pages (`box.py`:
+`run_box`, `wall_force`; `piston.py`: `compress`), in the style of the live scenes in
+thermophysics-interactive-book, and `page_numbers.py`, which prints what they show.
+`scripts/validate_walls.py` prints the validation numbers of `docs/walls.md`;
+`scripts/pyodide_week34.mjs WHEEL` runs the scenes in Pyodide under Node.
+
+Measured (Apple M5 Pro, 8 starting states, `scripts/validate_walls.py`): energy between
+walls changes by 1 to 2 parts in 10 000 of the kinetic energy over 1000 time units;
+PV/NkT from the force on all four walls 1.015, 1.020, 1.005, 1.010 against 1.009,
+1.019, 1.005, 1.005 expected from the second virial coefficient; one 2000-time-unit
+mean of the force on one wall scatters by 1.5 to 3.5% (about one hit per time unit);
+piston 100 -> 50 at speed 0.05: T ratio 2.03 +- 0.02, |change of energy - work| at most
+0.13 of 426. 200 atoms in 100 x 100 run at 147 000 steps per second with the thermostat
+and 360 000 without (native); the week 34 scenes take 2.9 s (wall force, 420 000 steps)
+and 0.6 s (piston) natively, 4.7 s and 0.9 s in Pyodide 314.0.8 under Node. Native and
+browser trajectories differ (rounding in the last digit, chaotic motion); their
+averages agree. 91 Python tests and the viewer checks pass; the Pyodide smoke test now
+also runs a piston. Thermostat noise is one sequence per `seed`: runs that should be
+independent need different seeds (`sim.start(state, seed=...)`), not only different
+starting positions.

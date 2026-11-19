@@ -11,19 +11,22 @@ the end is `run.state`, a System that also carries the clock (`time`, `step`).
 ## FCC
 
 ```python
-FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287)
+FCC(*, N=None, rho=None, box=None, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287,
+    boundary="periodic")
 ```
 
 Returns a `System` with a complete periodic FCC lattice and velocities not yet
 assigned. Default: 500 particles in a cubic box at rho = 0.001. Supply either rho or box; N counts
 atoms or molecules according to molecule. Cubes require N=4n³; rectangular boxes
 require commensurate whole conventional cells. `seed` controls molecular orientations.
+`boundary="walls"` keeps the sites and replaces the periodic images by [walls](../walls.md).
 
 ## Random
 
 ```python
 Random(*, N=None, rho=None, box=None, min_distance=.9,
-       max_attempts=1000, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287)
+       max_attempts=1000, molecule=None, bond=None, model=None, species=None, masses=1., seed=87287,
+       dimension=None, boundary="periodic")
 ```
 
 Returns a `System` with self-avoiding random positions and velocities not yet
@@ -32,6 +35,12 @@ least `min_distance`. Partners in a molecule are exempt. `max_attempts` limits
 trials **per particle**; unable-to-pack requests raise `ValueError`. The seed
 controls placement and molecular orientations, independently of the simulation seed.
 
+A box with two lengths, `box=(Lx, Ly)`, or `dimension=2` gives a flat,
+two-dimensional system of atoms. `boundary="walls"` puts a wall on every face
+of the box instead of periodic images, or one word per axis chooses, such as
+`("walls", "periodic")`; atoms then start at least half of `min_distance` from a
+wall. See [Flat boxes, walls and pistons](../walls.md).
+
 ## Explicit System
 
 ```python
@@ -39,8 +48,9 @@ System(positions, box, *, velocities=None, masses=None, molecule=None, bond=None
 ```
 
 Positions are a (number of atoms, 3) array; box is a scalar or length-3 array.
+Positions with two columns and a box with two lengths make a flat system.
 Optional velocities have the same shape. Masses are a positive per-atom array,
-defaulting to one. Inputs are copied. With `boundary="periodic"` (the default), positions wrap into the box. With `boundary="open"`, coordinates are preserved and the box is only a viewing frame: no walls or periodic images. Open systems currently support unbonded particles and gravity.
+defaulting to one. Inputs are copied. With `boundary="periodic"` (the default), positions wrap into the box. With `boundary="open"`, coordinates are preserved and the box is only a viewing frame: no walls or periodic images. Open systems currently support unbonded particles and gravity. With `boundary="walls"`, or one of `"periodic"` and `"walls"` per axis, the faces across those axes are [walls](../walls.md): every atom must lie between them, and the total momentum along those axes need not be zero.
 Use `molecule="diatomic"` with a `HarmonicBond` or `RigidBond`.
 The default is unbonded atoms; diatomics default to `HarmonicBond()` if bond is omitted.
 
@@ -69,17 +79,19 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.model` | Label: `atomic`, `diatomic-flexible`, `diatomic-rigid` or `water-rigid` |
 | `system.units` | `"reduced"` (default) or `"real"` (LAMMPS real units; water) |
 | `system.N` | Number of atoms, or molecules for diatomics and water |
-| `system.boundary` | `"periodic"` or `"open"` |
-| `system.rho` | Current N / volume for periodic systems; NaN for an unconfined cluster |
-| `system.box.lengths`, `.volume` | Box lengths and volume |
+| `system.boundary` | `"periodic"`, `"walls"`, a tuple with one of the two per axis, or `"open"` |
+| `system.dimension` | 3, or 2 for a flat system: the number of columns of positions and velocities |
+| `system.walls` | Names of the walls, such as `("left", "right", "bottom", "top")`; empty for a periodic box |
+| `system.rho` | Current N / volume (N / area for a flat system); NaN for an unconfined cluster |
+| `system.box.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system) |
 | `system.atoms.positions`, `.masses` | Read-only array snapshots |
 | `system.atoms.velocities` | Read-only snapshot, or None before velocities are assigned |
 | `system.atoms.molecule_ids` | IDs identifying molecular partners |
-| `system.dof` | Kinetic degrees of freedom with COM/rigid constraints removed |
+| `system.dof` | Kinetic degrees of freedom: one per atom and direction, less one for each periodic direction (total momentum zero) and for each rigid constraint |
 | `system.time`, `.step` | Clock of the state: zero for a new geometry, where the run ended for `run.state` |
 | `system.copy()` | Independent copy of the physical state |
 | `system.with_velocities(velocities)` | Copy with other velocities and the same positions, box and clock ([below](#reverse-or-perturb-velocities)) |
-| `system.with_box(box)` | Copy in a larger periodic box, contents centred and molecules whole; enlarging one side gives a slab with vacuum ([evaporation](../water.md#evaporation-a-slab-with-vacuum)) |
+| `system.with_box(box)` | Copy in a larger periodic box, contents centred and molecules whole; enlarging one side gives a slab with vacuum ([evaporation](../water.md#evaporation-a-slab-with-vacuum)). Between walls the atoms stay where they are and the far wall moves |
 
 Array snapshots do not let you edit the running simulation. Construct a new
 System to specify different coordinates; use `with_velocities` for different

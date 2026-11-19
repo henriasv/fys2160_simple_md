@@ -124,18 +124,29 @@ if(data.live){
   canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');
 }
 slider.max=frames.length-1;const extent=Math.max(...frames.flatMap(f=>f.box));
-function normalize(p,box){return p.map((v,d)=>(v-.5*box[d])/extent+.5);}
+// The view is centred on the box. Across an axis with walls the wall at 0 stays
+// where it is on screen and a piston moves, so the centre is that of the first
+// frame's box; a periodic box that changes size stays centred.
+const home=frames[0].box.slice();
+const pinned=home.map((_,d)=>data.boundary==='walls'||(Array.isArray(data.boundary)&&data.boundary[d]==='walls'));
+function centre(f){return f.box.map((v,d)=>.5*(pinned[d]?home[d]:v));}
+// Lengths of a box about the centre that holds this frame's box, and every saved frame's along pinned axes.
+function reach(f){return f.box.map((v,d)=>pinned[d]?Math.max(home[d],...frames.map(g=>2*g.box[d]-home[d])):v);}
+function normalize(p,f){const c=centre(f);return p.map((v,d)=>(v-c[d])/extent+.5);}
 const pointers=new Map();
 let pan=[0,0],timer=null;
 const cy=Math.cos(.35),sy=Math.sin(.35),cp=Math.cos(.3),sp=Math.sin(.3);
 const initial=[[cy,0,-sy],[-sy*sp,cp,-cy*sp],[sy*cp,sp,cy*cp]];
 // Orthographic views open face-on to the xz plane with z up, or with z across
 // for a box elongated along z (a slab). Rows: screen right, screen up, towards viewer.
+// A flat system (box thickness 0) always opens face-on to its own plane: x right, y up.
+const flat=frames[0].box[2]===0;
 function frontView(){
   const b=frames[+slider.value].box;
+  if(flat)return [[1,0,0],[0,1,0],[0,0,1]];
   return b[2]===Math.max(...b)&&b[2]>1.5*Math.min(...b)?[[0,0,1],[1,0,0],[0,1,0]]:[[1,0,0],[0,0,1],[0,-1,0]];
 }
-function homeView(){return (projection.value==='orthographic'?frontView():initial).map(row=>row.slice());}
+function homeView(){return (projection.value==='orthographic'||flat?frontView():initial).map(row=>row.slice());}
 let rotation=homeView();
 // Apply camera-axis rotations, so the near face follows the pointer at any orientation.
 function rotateView(dx,dy){
@@ -160,9 +171,9 @@ const width=Math.max(1,Math.round(bounds.width*dpr));
 const height=Math.max(1,Math.round(bounds.height*dpr));
 if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;}
 const f=frames[+slider.value],edges=[],bonds=[];
-const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f.box)));
+const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f)));
 for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b&&data.boundary!=="open")edges.push(corners[a],corners[b]);}
-const positions=f.x.map(p=>cameraPosition(normalize(p,f.box)));
+const positions=f.x.map(p=>cameraPosition(normalize(p,f)));
 const pairs=data.bonds||(data.molecular?Array.from({length:Math.floor(positions.length/2)},(_,k)=>[2*k,2*k+1]):[]);
 for(const [i,j] of pairs){
   if(j<positions.length&&f.x[i].every((v,d)=>Math.abs(v-f.x[j][d])<.5*f.box[d]))bonds.push(positions[i],positions[j]);
@@ -354,9 +365,9 @@ function startOmovi([lib,THREE]){
   // step back; larger ones narrow the field of view, so the camera never moves
   // into the box.
   function resetCamera(){
-    const lengths=frames[+slider.value].box,longest=lengths.indexOf(Math.max(...lengths));
+    const lengths=reach(frames[+slider.value]),longest=lengths.indexOf(Math.max(...lengths));
     let direction=initial[2];
-    if(projection.value==='orthographic'){
+    if(projection.value==='orthographic'||flat){
       // Straight along y is the pole of omovi's y-up orbit: step off it by a hair,
       // on the side that makes the front view's up direction point up on screen.
       const [,up,toward]=frontView();
@@ -388,7 +399,7 @@ function startOmovi([lib,THREE]){
     const camera=visualizer.orthographicCamera;camera.updateMatrixWorld();
     const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0);
     const up=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,1);
-    const lengths=frames[+slider.value].box;let across=0,high=0;
+    const lengths=reach(frames[+slider.value]);let across=0,high=0;
     for(let c=0;c<8;c++){
       const corner=new THREE.Vector3(...lengths.map((v,d)=>(((c>>d)&1)-.5)*v));
       across=Math.max(across,Math.abs(corner.dot(right)));high=Math.max(high,Math.abs(corner.dot(up)));
@@ -399,20 +410,20 @@ function startOmovi([lib,THREE]){
     visualizer.forceRender=true;
   }
   function show(f){
-    const half=f.box.map(v=>.5*v);
-    for(let i=0;i<types.length;i++)for(let d=0;d<3;d++)particles.positions[3*i+d]=f.x[i][d]-half[d];
+    const half=f.box.map(v=>.5*v),c=centre(f);
+    for(let i=0;i<types.length;i++)for(let d=0;d<3;d++)particles.positions[3*i+d]=f.x[i][d]-c[d];
     particles.markNeedsUpdate();
     if(bonds){
       bonds.count=0;
       for(const [i,j] of pairs){
         if(j>=types.length||!f.x[i].every((v,d)=>Math.abs(v-f.x[j][d])<half[d]))continue;
-        bonds.add(...f.x[i].map((v,d)=>v-half[d]),...f.x[j].map((v,d)=>v-half[d]),bondRadius);
+        bonds.add(...f.x[i].map((v,d)=>v-c[d]),...f.x[j].map((v,d)=>v-c[d]),bondRadius);
       }
       bonds.markNeedsUpdate();
     }
     const edge=box.geometry.attributes.position.array;let k=0;
     for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b){
-      for(const c of [a,b])for(let e=0;e<3;e++)edge[k++]=(((c>>e)&1)-.5)*f.box[e];
+      for(const corner of [a,b])for(let e=0;e<3;e++)edge[k++]=((corner>>e)&1)*f.box[e]-c[e];
     }}
     box.geometry.attributes.position.needsUpdate=true;
     visualizer.forceRender=true;

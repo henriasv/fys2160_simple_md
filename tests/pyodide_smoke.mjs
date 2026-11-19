@@ -43,7 +43,22 @@ except ImportError as exc:
     assert 'pandas is not installed' in str(exc)
 else:
     raise AssertionError('Run.thermo should need pandas')
+# A flat box with walls and a piston: the work of the piston is the energy the gas gains.
+from fys2160_md import Piston, Random
+flat = MDSimulation(pair_potential='lj', epsilon=1, sigma=1, ensemble='nve',
+                    temperature=2, timestep=0.005, cutoff=2.5)
+live = flat.start(Random(N=100, box=(40, 40), boundary='walls', min_distance=1.0),
+                  piston=Piston('right', to=38, speed=0.2))
+before = live.observables
+live.advance(2400)
+after = live.observables
+gained = after['total_energy']-before['total_energy']
+assert live.positions.shape == (100, 2) and live.box.tolist() == [38., 40.], live.box
+assert after['work'] > 5 and abs(gained-after['work']) < 1e-3*before['kinetic_energy'], (gained, after['work'])
+assert after['wall_impulse_left'] > 0 and after['temperature'] > before['temperature']
+
 json.dumps(dict(pyodide=sys.modules['pyodide'].__version__, python=sys.version.split()[0],
                 numpy=np.__version__, fys2160_md=fys2160_md.__version__,
-                temperature=float(table['temperature'][-1]), relative_energy_drift=drift))
+                temperature=float(table['temperature'][-1]), relative_energy_drift=drift,
+                piston_work=after['work'], piston_energy_gain=gained))
 `));
