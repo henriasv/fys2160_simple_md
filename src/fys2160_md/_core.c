@@ -380,9 +380,9 @@ static void kick(int n, double *v, const double *f, const double *mass, double d
    along the directions that conserve it (the periodic ones; walls take up momentum). */
 static void thermostat(int n, double *v, const double *mass, double T,
                        double gamma, double dt, uint64_t *rng, int dimension, const int *conserved) {
-    double c = exp(-gamma * dt), momentum[3] = {0,0,0}, totalmass = 0;
+    double c = exp(-gamma * dt), spread = -expm1(-2*gamma*dt) * T, momentum[3] = {0,0,0}, totalmass = 0;
     for (int i = 0; i < n; ++i) {
-        double sigma = sqrt(-expm1(-2*gamma*dt) * T / mass[i]);
+        double sigma = sqrt(spread / mass[i]);
         totalmass += mass[i];
         for (int d = 0; d < dimension; ++d) {
             v[3*i+d] = c*v[3*i+d] + sigma*gaussian(rng);
