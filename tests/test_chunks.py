@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import numpy as np
-from fys2160_md import FCC, Random, Plummer, IceIh, MDSimulation, LiveRun, RigidBond, RigidWater, System, Run
+from fys2160_md import FCC, Random, Plummer, IceIh, MDSimulation, LiveRun, RigidBond, RigidWater, Run
 from fys2160_md import _core
 
 LJ = dict(pair_potential='lj', epsilon=1., sigma=1., timestep=.005, cutoff=2.5)
