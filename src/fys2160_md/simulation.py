@@ -74,7 +74,8 @@ class MDSimulation:
     ``run = sim.run(state, steps=...)`` evolves a copy of ``state`` (a System)
     and saves the result. Continue from ``run.state``. Every run uses the
     controls given here plus its own arguments; nothing carries over between
-    runs except through the state you pass in.
+    runs except through the state you pass in. ``live = sim.start(state)``
+    gives the same run in memory, to advance a few steps at a time.
     """
 
     def __init__(self, system=None, *, pair_potential='lj', epsilon=1., sigma=1., mixing_rule='lorentz-berthelot', exclude_bonded_pairs=True, temperature=None, ensemble='nvt', timestep=None,
@@ -200,6 +201,22 @@ class MDSimulation:
                 settings[key] = value
         return _Engine(self, state, settings, None if seed is None else _seed(seed))
 
+    def start(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
+              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None):
+        """Start a run of a copy of ``state`` in memory, and return it as a LiveRun.
+
+        Nothing is written to disk. ``live.advance(steps)`` takes steps;
+        ``live.observables``, ``live.positions``, ``live.velocities`` and
+        ``live.box`` read the result; ``live.set(temperature=...)`` changes a
+        control for the steps that follow; ``live.state`` is a System to continue
+        from, here or with ``sim.run``. The controls, the clock and the random
+        sequence are treated as in ``run``, which is this loop with files:
+        advancing in pieces gives the same trajectory as one call.
+        """
+        return LiveRun(self._engine(state, timestep=timestep, ensemble=ensemble, temperature=temperature,
+                                    pressure=pressure, heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff,
+                                    kspace_accuracy=kspace_accuracy, seed=seed))
+
     @_legacy_output_names
     def run(self, state, steps=1000, *, timestep=None, ensemble=None, temperature=None, pressure=None,
             heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None,
@@ -236,8 +253,9 @@ class MDSimulation:
             max_fps = _positive(max_fps, 'max_fps')
             if not show:
                 raise ValueError('max_fps is a live-view option; set show=True.')
-        engine = self._engine(state, timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
-                              heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed)
+        advancing = self.start(state, timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
+                               heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed)
+        engine = advancing._engine
         if deform is not None:
             deform = _positive(deform, 'deform')
             if engine.kind != 'molecular':
@@ -293,7 +311,7 @@ class MDSimulation:
                         chunk = min(chunk, trajectory_every-elapsed%trajectory_every)
                     if live:
                         chunk = min(chunk, frame_every-elapsed%frame_every)
-                    interrupted = engine._advance(chunk)
+                    interrupted = advancing._advance(chunk)
                     elapsed = engine.step-start
                     final = elapsed == steps or interrupted
                     if elapsed%thermo_every == 0 or final:
@@ -336,6 +354,99 @@ class MDSimulation:
 
     def __repr__(self):
         return f'MDSimulation(pair_potential={self.pair_potential!r}, units={self.units!r}, settings={self.settings})'
+
+
+class LiveRun:
+    """A run held in memory, which its caller advances a few steps at a time.
+
+    ``live = sim.start(state, ...)`` copies the state; nothing is written to
+    disk. Between calls to ``advance`` the caller may read the run, change a
+    control with ``set``, draw a frame or stop. ``live.state`` is a System that
+    ``sim.run`` or another ``sim.start`` continues from, with the clock and the
+    thermostat's random sequence carried over. How the steps are divided
+    between calls does not change the trajectory.
+    """
+
+    def __init__(self, engine):
+        self._engine = engine
+        self._failed = False
+
+    def _advance(self, steps):
+        """Take steps; True if a keyboard interrupt stopped them early."""
+        self._check()
+        try:
+            return self._engine._advance(steps)
+        except BaseException:
+            self._failed = True
+            raise
+
+    def _check(self):
+        if self._failed:
+            raise RuntimeError('This run stopped on an error and cannot continue; start again from an earlier state.')
+
+    def advance(self, steps):
+        """Take ``steps`` MD steps (a nonnegative integer).
+
+        A keyboard interrupt stops after a whole step and is raised again, so a
+        loop around ``advance`` ends; the run stays usable.
+        """
+        if self._advance(_integer(steps, 'steps', 0)):
+            raise KeyboardInterrupt
+
+    def set(self, *, timestep=None, ensemble=None, temperature=None, pressure=None, heat_rate=None):
+        """Change controls for the steps that follow; omitted ones keep their values.
+
+        The effect is that of a new run started from ``live.state`` with these
+        controls: a new ``temperature`` or ``pressure`` is the target from the
+        next step (a step change, not a ramp), and velocities are not reset.
+        """
+        self._check()
+        self._engine._set(timestep=timestep, ensemble=ensemble, temperature=temperature,
+                          pressure=pressure, heat_rate=heat_rate)
+
+    @property
+    def settings(self):
+        """The controls now in force (timestep, ensemble, temperature, pressure, heat_rate)."""
+        return self._engine.settings.copy()
+
+    @property
+    def step(self):
+        """Number of MD steps taken to reach the current state, counted from the state's clock."""
+        return self._engine.step
+
+    @property
+    def time(self):
+        """Simulation time of the current state."""
+        return self._engine.time
+
+    @property
+    def observables(self):
+        """Current values of the quantities that ``run`` records in thermo.csv, as a dict."""
+        return self._engine.observables
+
+    @property
+    def positions(self):
+        """Read-only (atoms, 3) snapshot of the positions, wrapped into a periodic box."""
+        return _readonly(self._engine._x)
+
+    @property
+    def velocities(self):
+        """Read-only (atoms, 3) snapshot of the velocities."""
+        return _readonly(self._engine._v)
+
+    @property
+    def box(self):
+        """Read-only snapshot of the three box lengths, as in a saved frame."""
+        return _readonly(self._engine._box)
+
+    @property
+    def state(self):
+        """The current state, an independent System: continue from it with ``sim.run`` or ``sim.start``."""
+        self._check()
+        return self._engine.state()
+
+    def __repr__(self):
+        return f'LiveRun(step={self.step}, time={self.time:g}, settings={self.settings})'
 
 
 def _check_controls(config, sim, kind=None, model=None):
@@ -435,15 +546,25 @@ class _Engine:
         self.time = system.time
         self.heat_added = system._heat
         self._rng = seed if seed is not None else (system._rng if system._rng is not None else sim.seed)
-        controlled = self.settings['ensemble'] in ('nph', 'npt')
-        self._rate = system._rate if controlled else 0.
+        self._barostat(system._rate)
+        # Kept by the native solver between calls: the neighbour list and the forces.
+        self._workspace = _core.molecular_workspace() if self.kind == 'molecular' else _core.workspace()
+        self._advance(0)
+
+    def _barostat(self, rate):
+        """Barostat rate and inertia for the controls now in force."""
+        self._rate = rate if self.settings['ensemble'] in ('nph', 'npt') else 0.
         self._baromass = (self.dof+3)*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
         if self.kind == 'molecular':
             # Barostat inertia from centre-of-mass degrees of freedom (3N-3)+3.
             self._baromass = 3*self.particles*self._units.boltzmann*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
-        # Kept by the native solver between calls: the neighbour list and the forces.
-        self._workspace = _core.molecular_workspace() if self.kind == 'molecular' else _core.workspace()
-        self._advance(0)
+
+    def _set(self, **controls):
+        """Change run controls as a new run from the current state would have them."""
+        settings = self.settings.copy()
+        settings.update({key: value for key, value in controls.items() if value is not None})
+        self.settings = _check_controls(settings, self.sim, self.kind, self.model)
+        self._barostat(self._rate)
 
     def _prepare_molecular(self):
         """Type tables, per-atom charges and rigid-water geometry for the native solver."""
