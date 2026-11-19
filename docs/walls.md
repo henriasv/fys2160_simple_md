@@ -55,7 +55,8 @@ have two columns.
 
 Flat systems take unbonded atoms with `pair_potential="lj"` or `"lj96"`, in
 `nve` or `nvt`. `FCC` is a three-dimensional lattice and rejects a flat box.
-`run.view()` and `show=True` draw a flat system face-on.
+`run.view()` and `show=True` draw a flat system face-on. Between walls the
+view keeps the walls at 0 where they are, so a piston is seen to move.
 
 ## Walls
 

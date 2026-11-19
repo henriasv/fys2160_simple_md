@@ -336,6 +336,11 @@ force per length on average. The Langevin thermostat at the default friction 1 t
 dilute gas into a random walk (correct averages, slow wall-force statistics): the week 34
 scenes use `friction=0.05`.
 
+Viewer: a flat system has box thickness 0 and opens face-on to the xy plane in either
+projection. Across an axis with walls the view is centred on the first frame's box, not
+each frame's (`centre`, `reach` in `viewer.js`), so the wall at 0 stays put and a piston
+moves; periodic boxes stay centred as before. Checked in a browser with OMOVI.
+
 `examples/week34/` holds drafts of the two scenes for the session pages (`box.py`:
 `run_box`, `wall_force`; `piston.py`: `compress`), in the style of the live scenes in
 thermophysics-interactive-book, and `page_numbers.py`, which prints what they show.

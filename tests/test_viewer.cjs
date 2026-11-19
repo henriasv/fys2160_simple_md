@@ -127,4 +127,10 @@ for(const projection of ['perspective','orthographic']){
   assert.ok(Math.abs(images[1][0]-390)<1e-9&&Math.abs(images[1][1]-210)<1e-9,images[1]);  // 2 right and 6 up, at 300/20 pixels per length
   assert.equal(edgeCount,24);sheet.dispose();
 }
+// Between walls the wall at 0 stays on screen when a piston shortens the box: an atom at rest does not move.
+controls.get('[data-projection]').value='orthographic';
+const stroke=sandbox.createMDView(host,{frames:[{...frame,box:[10,20,0],x:[[5,10,0],[7,16,0]]},{...frame,box:[6,20,0],x:[[5,10,0],[7,16,0]]}],
+  boundary:'walls',projection:'orthographic',zoom:1,note:''});
+const resting=images.map(p=>p.slice());controls.get('input').value=1;controls.get('input').oninput();
+assert.deepEqual(images,resting);controls.get('input').value=0;stroke.dispose();
 console.log('Viewer controls passed: rotation, secondary/Shift/two-touch pan, inverted zoom, reset, playback controls, live status, sizing, water display and cleanup.');
