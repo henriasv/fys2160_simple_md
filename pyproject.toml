@@ -28,3 +28,23 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 fys2160_md = ["viewer.js"]
+
+# The C sources are compiled into the extension; wheels do not need to carry them.
+[tool.setuptools.exclude-package-data]
+fys2160_md = ["*.c", "*.h"]
+
+# Wheels are built by .github/workflows/wheels.yml: one per CPython from
+# requires-python up, on every platform numpy and pandas publish wheels for.
+# Left out: 32-bit Windows (no pandas wheels), free-threaded builds, and
+# Python 3.10 on Windows arm64 (no numpy wheels). Each wheel runs the test suite.
+[tool.cibuildwheel]
+skip = ["*-win32", "cp3??t-*", "cp310-win_arm64"]
+test-requires = ["ipython"]  # Run.view() builds IPython HTML in two tests.
+test-command = "python -m unittest discover -s {project}/tests"
+
+# The browser wheel (CIBW_PLATFORM=pyodide): one per Pyodide generation. cp314 is
+# Pyodide 314.x, platform tag pyemscripten_2026_0_wasm32. pandas is not a dependency
+# there, so the tests that read Run.thermo ask for it.
+[tool.cibuildwheel.pyodide]
+build = "cp314-*"
+test-requires = ["ipython", "pandas"]
