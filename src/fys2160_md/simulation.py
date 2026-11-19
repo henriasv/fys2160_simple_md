@@ -441,6 +441,8 @@ class _Engine:
         if self.kind == 'molecular':
             # Barostat inertia from centre-of-mass degrees of freedom (3N-3)+3.
             self._baromass = 3*self.particles*self._units.boltzmann*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
+        # Kept by the native solver between calls: the neighbour list and the forces.
+        self._workspace = _core.molecular_workspace() if self.kind == 'molecular' else _core.workspace()
         self._advance(0)
 
     def _prepare_molecular(self):
@@ -524,7 +526,7 @@ class _Engine:
         if sim.pair_potential == 'gravity':
             self._potential, self._virial, done, interrupted = _core.advance_gravity(
                 self._x, self._v, self._f, self._mass, steps, c['timestep'],
-                sim.G, sim.softening, c['heat_rate'])
+                sim.G, sim.softening, c['heat_rate'], self._workspace)
             self._u[:] = self._x
             self.step += done
             self.time += done*c['timestep']
@@ -538,7 +540,7 @@ class _Engine:
             c['temperature'], self.friction if c['ensemble'] in ('nvt','npt') else 0.,
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
-            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters)
+            int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, self._pressure_numerator = result
         self.step += done
         self.time += done*c['timestep']
@@ -562,7 +564,7 @@ class _Engine:
             barostat_mass=self._baromass, rate=self._rate, mvv2e=U.mvv2e, qqr2e=U.qqr2e,
             molecule_size=3 if self.model == 'water-rigid' else 1, constraints=self._constraints,
             alpha=self._alpha, lj_shift=self.sim.lj_shift, coulomb=int(self._charge is not None),
-            accuracy=c.get('kspace_accuracy', 1e-5), order=5)
+            accuracy=c.get('kspace_accuracy', 1e-5), order=5, workspace=self._workspace)
         self._terms = result
         self._potential = result['lj'] + result['coulomb'] + result['kspace']
         self._virial = result['virial']

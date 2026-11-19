@@ -7,7 +7,29 @@
 #include "molecular.h"
 
 typedef struct { int i, j; } Pair;
-typedef struct { Pair *pairs; size_t size, capacity; double *reference; double box[3]; } Neighbors;
+/* Pairs within the list radius, ordered by i and then j whichever way they were
+   found, so forces are summed in one fixed order. reference and box are the
+   unwrapped positions and box at the build. The rest is work space for the
+   cell build, kept between builds. */
+typedef struct {
+    Pair *pairs; size_t size, capacity; double *reference; double box[3];
+    Pair *found; size_t found_capacity, *offset;
+    double *sorted;
+    int *cell, *members, *first, first_capacity;
+} Neighbors;
+/* What one run keeps between calls into the solver: the neighbour list, and the
+   arrays and parameters exactly as the previous call left them. A call that
+   finds them bit-for-bit unchanged continues with that list and those forces;
+   any difference (positions, box, cutoff, atom count, pair or bond parameters)
+   makes it start afresh. */
+#define WORKSPACE_SCALARS 12
+typedef struct {
+    Neighbors nb;
+    int n, current;
+    double *x, *u, *f, *tables, box[3], scalars[WORKSPACE_SCALARS], potential, virial;
+    size_t table_size[2];
+} Workspace;
+static const char WORKSPACE[] = "fys2160_md._core.workspace";
 
 static double uniform01(uint64_t *state) {
     uint64_t x = *state;
@@ -23,29 +45,208 @@ static double gaussian(uint64_t *state) {
 static double minimum_image(double x, double length) {
     return x - length * nearbyint(x / length);
 }
-static int build_neighbors(Neighbors *nb, int n, const double *x,
-                           const double *u, const double *box, double radius) {
-    nb->size = 0;
-    double rmax2 = radius * radius;
-    for (int i = 0; i < n; ++i) for (int j = i + 1; j < n; ++j) {
-        double r2 = 0;
+static int reserve_pairs(Pair **pairs, size_t *capacity, size_t needed) {
+    if (needed <= *capacity) return 0;
+    size_t cap = *capacity ? *capacity : 1024;
+    while (cap < needed) cap *= 2;
+    Pair *p = realloc(*pairs, cap * sizeof(Pair));
+    if (!p) { PyErr_NoMemory(); return -1; }
+    *pairs = p; *capacity = cap;
+    return 0;
+}
+/* Cells at least radius/reach wide, so that every pair within radius lies at
+   most reach cells apart. Returns the reach (1 or 2) with the cheapest build, or
+   0 when checking all pairs is cheaper or the box holds too few cells. The
+   costs are rough times per atom in nanoseconds, measured for this code: one
+   distance per candidate, and a fixed part for each run of cells that is scanned.
+   only = 1 or 2 asks for that reach whatever it costs. */
+static int choose_cells(int n, const double *box, double radius, int grid[3], int only) {
+    double best = only ? HUGE_VAL : 0.55 * n;
+    int reach = 0;
+    for (int k = 1; k <= 2; ++k) {
+        if (only && only != k) continue;
+        int g[3], width = 2*k + 1, fits = 1, limit = (int)cbrt(4.0*k*k*k*n) + 1;
         for (int d = 0; d < 3; ++d) {
-            double dx = minimum_image(x[3*i+d] - x[3*j+d], box[d]);
-            r2 += dx * dx;
+            /* The margin keeps rounding of cell indices from hiding a pair. */
+            double count = floor(box[d] * k / (radius * (1 + 1e-9)));
+            g[d] = count < limit ? (int)count : limit;
+            if (g[d] < width) fits = 0;
         }
-        if (r2 < rmax2) {
-            if (nb->size == nb->capacity) {
-                size_t cap = nb->capacity ? nb->capacity * 2 : 1024;
-                Pair *p = realloc(nb->pairs, cap * sizeof(Pair));
-                if (!p) { PyErr_NoMemory(); return -1; }
-                nb->pairs = p; nb->capacity = cap;
+        if (!fits) continue;
+        double cost = 8.0*width*width + 0.9*width*width*width*n/((double)g[0]*g[1]*g[2]);
+        if (cost < best) { best = cost; reach = k; memcpy(grid, g, sizeof g); }
+    }
+    return reach;
+}
+static int build_with_cells(Neighbors *nb, int n, const double *x, const double *box,
+                            double rmax2, const int grid[3], int reach) {
+    int cells = grid[0]*grid[1]*grid[2];
+    if (cells + 1 > nb->first_capacity) {
+        int *first = realloc(nb->first, ((size_t)cells + 1) * sizeof(int));
+        if (!first) { PyErr_NoMemory(); return -1; }
+        nb->first = first; nb->first_capacity = cells + 1;
+    }
+    /* Atoms sorted by cell, cells counted along x first: members[first[c] .. first[c+1])
+       are the atoms of cell c and sorted holds their positions, so a run of cells
+       along x is one stretch of memory. */
+    int *first = nb->first, *members = nb->members, *cell = nb->cell;
+    double *sorted = nb->sorted;
+    memset(first, 0, ((size_t)cells + 1) * sizeof(int));
+    for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
+        double t = x[3*i+d] / box[d];
+        int c = (int)((t - floor(t)) * grid[d]);
+        cell[3*i+d] = c < grid[d] ? c : grid[d] - 1;
+    }
+    for (int i = 0; i < n; ++i) ++first[(cell[3*i+2]*grid[1] + cell[3*i+1])*grid[0] + cell[3*i] + 1];
+    for (int c = 0; c < cells; ++c) first[c+1] += first[c];
+    for (int i = 0; i < n; ++i) {
+        int m = first[(cell[3*i+2]*grid[1] + cell[3*i+1])*grid[0] + cell[3*i]]++;
+        members[m] = i;
+        memcpy(sorted + 3*m, x + 3*i, 3*sizeof(double));
+    }
+    for (int c = cells; c > 0; --c) first[c] = first[c-1];
+    first[0] = 0;
+    /* The partners i < j of each j, taking j in rising order; ordering the pairs
+       by i afterwards leaves the partners of each i in rising order too. The
+       product with 1/box picks another image than the solver's division only for
+       a separation of half a box, which is beyond the radius when cells are used. */
+    const double inverse[3] = {1/box[0], 1/box[1], 1/box[2]};
+    size_t found = 0;
+    for (int j = 0; j < n; ++j) {
+        const double xj[3] = {x[3*j], x[3*j+1], x[3*j+2]};
+        /* The cells within reach along x, as one run or as two when it wraps. */
+        int low = cell[3*j] - reach, high = cell[3*j] + reach, runs = 1, run[2][2] = {{low, high}, {0, 0}};
+        if (low < 0) { runs = 2; run[0][0] = 0; run[1][0] = low + grid[0]; run[1][1] = grid[0] - 1; }
+        else if (high >= grid[0]) { runs = 2; run[0][1] = grid[0] - 1; run[1][0] = 0; run[1][1] = high - grid[0]; }
+        for (int a2 = -reach; a2 <= reach; ++a2) for (int a1 = -reach; a1 <= reach; ++a1) {
+            int c2 = cell[3*j+2] + a2, c1 = cell[3*j+1] + a1;
+            c2 += c2 < 0 ? grid[2] : c2 >= grid[2] ? -grid[2] : 0;
+            c1 += c1 < 0 ? grid[1] : c1 >= grid[1] ? -grid[1] : 0;
+            int row = (c2*grid[1] + c1)*grid[0];
+            for (int r = 0; r < runs; ++r) {
+                int begin = first[row + run[r][0]], end = first[row + run[r][1] + 1];
+                if (found + (size_t)(end - begin) > nb->found_capacity &&
+                    reserve_pairs(&nb->found, &nb->found_capacity, found + (size_t)(end - begin)) < 0) return -1;
+                Pair *out = nb->found;
+                for (int m = begin; m < end; ++m) {
+                    double r2 = 0;
+                    for (int d = 0; d < 3; ++d) {
+                        double dx = sorted[3*m+d] - xj[d];
+                        dx -= box[d] * nearbyint(dx * inverse[d]);
+                        r2 += dx * dx;
+                    }
+                    out[found] = (Pair){members[m], j};
+                    found += (r2 < rmax2) & (members[m] < j);
+                }
             }
-            nb->pairs[nb->size++] = (Pair){i, j};
         }
+    }
+    if (reserve_pairs(&nb->pairs, &nb->capacity, found) < 0) return -1;
+    size_t *offset = nb->offset;
+    memset(offset, 0, ((size_t)n + 1) * sizeof(size_t));
+    for (size_t p = 0; p < found; ++p) ++offset[nb->found[p].i + 1];
+    for (int i = 0; i < n; ++i) offset[i+1] += offset[i];
+    for (size_t p = 0; p < found; ++p) nb->pairs[offset[nb->found[p].i]++] = nb->found[p];
+    nb->size = found;
+    return 0;
+}
+/* method: 0 checks all pairs, 1 or 2 uses cells with that reach, -1 takes the
+   cheapest. All give the same list in the same order. */
+static int build_neighbors(Neighbors *nb, int n, const double *x,
+                           const double *u, const double *box, double radius, int method) {
+    double rmax2 = radius * radius;
+    int grid[3], reach = method ? choose_cells(n, box, radius, grid, method > 0 ? method : 0) : 0;
+    if (method > 0 && !reach) {
+        PyErr_SetString(PyExc_ValueError, "The box is too small for cells of this reach.");
+        return -1;
+    }
+    if (reach) {
+        if (build_with_cells(nb, n, x, box, rmax2, grid, reach) < 0) return -1;
+    } else {
+        /* In a box this small a pair half a box apart may be listed under either
+           image; the two are equally far, and the forces choose their own. */
+        const double inverse[3] = {1/box[0], 1/box[1], 1/box[2]};
+        size_t size = 0;
+        for (int i = 0; i < n; ++i) {
+            const double xi[3] = {x[3*i], x[3*i+1], x[3*i+2]};
+            if (reserve_pairs(&nb->pairs, &nb->capacity, size + (size_t)(n - i)) < 0) return -1;
+            Pair *out = nb->pairs;
+            for (int j = i + 1; j < n; ++j) {
+                double r2 = 0;
+                for (int d = 0; d < 3; ++d) {
+                    double dx = xi[d] - x[3*j+d];
+                    dx -= box[d] * nearbyint(dx * inverse[d]);
+                    r2 += dx * dx;
+                }
+                out[size] = (Pair){i, j};
+                size += r2 < rmax2;
+            }
+        }
+        nb->size = size;
     }
     memcpy(nb->reference, u, (size_t)n * 3 * sizeof(double));
     memcpy(nb->box, box, 3*sizeof(double));
     return 0;
+}
+static void release_workspace(Workspace *w) {
+    free(w->nb.pairs); free(w->nb.reference); free(w->nb.found); free(w->nb.offset);
+    free(w->nb.cell); free(w->nb.members); free(w->nb.first); free(w->nb.sorted);
+    free(w->x); free(w->u); free(w->f); free(w->tables);
+    memset(w, 0, sizeof *w);
+}
+/* Size the arrays for n atoms; a different atom count discards what was kept. */
+static int prepare_workspace(Workspace *w, int n) {
+    if (w->n == n) return 0;
+    release_workspace(w);
+    size_t count = (size_t)n * 3 * sizeof(double);
+    w->nb.reference = malloc(count); w->nb.sorted = malloc(count); w->x = malloc(count); w->u = malloc(count); w->f = malloc(count);
+    w->tables = malloc((size_t)n * 4 * sizeof(double));
+    w->nb.offset = malloc(((size_t)n + 1) * sizeof(size_t));
+    w->nb.cell = malloc((size_t)n * 3 * sizeof(int)); w->nb.members = malloc((size_t)n * sizeof(int));
+    if (!w->nb.reference || !w->nb.sorted || !w->x || !w->u || !w->f || !w->tables || !w->nb.offset || !w->nb.cell || !w->nb.members) {
+        release_workspace(w); PyErr_NoMemory(); return -1;
+    }
+    w->n = n;
+    return 0;
+}
+static int same(const double *kept, const double *now, size_t count) {
+    return !count || memcmp(kept, now, count * sizeof(double)) == 0;
+}
+/* table a and table b are constant inputs of the forces (at most 2n doubles each). */
+static int unchanged(const Workspace *w, int n, const double *x, const double *u, const double *box,
+                     const double *scalars, const double *a, size_t na, const double *b, size_t nb) {
+    return w->current && w->n == n && same(w->scalars, scalars, WORKSPACE_SCALARS) && same(w->box, box, 3) &&
+           same(w->x, x, (size_t)3*n) && (!u || same(w->u, u, (size_t)3*n)) &&
+           w->table_size[0] == na && w->table_size[1] == nb && same(w->tables, a, na) && same(w->tables + 2*(size_t)n, b, nb);
+}
+static void remember(Workspace *w, int n, const double *x, const double *u, const double *f, const double *box,
+                     const double *scalars, const double *a, size_t na, const double *b, size_t nb,
+                     double potential, double virial) {
+    size_t count = (size_t)n * 3 * sizeof(double);
+    memcpy(w->x, x, count); memcpy(w->f, f, count);
+    if (u) memcpy(w->u, u, count);
+    memcpy(w->box, box, sizeof w->box); memcpy(w->scalars, scalars, sizeof w->scalars);
+    if (na) memcpy(w->tables, a, na * sizeof(double));
+    if (nb) memcpy(w->tables + 2*(size_t)n, b, nb * sizeof(double));
+    w->table_size[0] = na; w->table_size[1] = nb;
+    w->potential = potential; w->virial = virial; w->current = 1;
+}
+static void free_workspace(PyObject *capsule) {
+    Workspace *w = PyCapsule_GetPointer(capsule, WORKSPACE);
+    if (w) { release_workspace(w); free(w); }
+}
+static PyObject *workspace(PyObject *self, PyObject *args) {
+    (void)self; (void)args;
+    Workspace *w = calloc(1, sizeof *w);
+    if (!w) return PyErr_NoMemory();
+    PyObject *capsule = PyCapsule_New(w, WORKSPACE, free_workspace);
+    if (!capsule) free(w);
+    return capsule;
+}
+/* An optional trailing argument: None or absent gives a workspace for this call only. */
+static Workspace *borrowed_workspace(PyObject *object, Workspace *local) {
+    if (!object || object == Py_None) return local;
+    return PyCapsule_GetPointer(object, WORKSPACE);
 }
 static int needs_rebuild(const Neighbors *nb, int n, const double *u,
                          const double *box, double cutoff, double skin) {
@@ -226,8 +427,9 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
 
 static PyObject *advance(PyObject *self, PyObject *args) {
     (void)self;
-    PyObject *objects[6], *result = NULL, *parameter_object=NULL, *bond_object=NULL;
+    PyObject *objects[6], *result = NULL, *parameter_object=NULL, *bond_object=NULL, *workspace_object=NULL;
     Py_buffer parameter_buffer={0}, bond_buffer={0};
+    Workspace local={0}, *ws;
     const double *parameters=NULL, *bond_parameters=NULL;
     Py_buffer buffers[6] = {{0}};
     int requested, done = 0, interrupted = 0;
@@ -235,10 +437,10 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     int model, pair=-1, exclude=1;
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
-    Neighbors nb = {0};
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOO", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOO", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object)) return NULL;
+    if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
         int flags = PyBUF_C_CONTIGUOUS | PyBUF_FORMAT | (k<5 ? PyBUF_WRITABLE : 0);
@@ -262,9 +464,6 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_SetString(PyExc_ValueError,"Pair parameters must be a contiguous float64 (N,2) array.");goto cleanup;
         }
         parameters=parameter_buffer.buf;
-        for(int i=0;i<2*n;++i)if(!(parameters[i]>0)||!isfinite(parameters[i])){
-            PyErr_SetString(PyExc_ValueError,"Pair epsilon and sigma must be finite and positive.");goto cleanup;
-        }
         for(int i=0;i<5;++i){
             uintptr_t a=(uintptr_t)parameter_buffer.buf,b=(uintptr_t)buffers[i].buf;
             if(a<b+buffers[i].len && b<a+parameter_buffer.len){
@@ -280,11 +479,6 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_SetString(PyExc_ValueError,"Bond parameters must be a contiguous float64 (number of bonds,4) array.");goto cleanup;
         }
         bond_parameters=bond_buffer.buf;
-        for(int i=0;i<count;++i){const double *b=bond_parameters+4*i;
-            if(!(b[0]>0)||b[1]<0||b[3]<0||!isfinite(b[0]+b[1]+b[2]+b[3])){
-                PyErr_SetString(PyExc_ValueError,"Invalid bond parameters.");goto cleanup;
-            }
-        }
         for(int i=0;i<5;++i){
             uintptr_t a=(uintptr_t)bond_buffer.buf,b=(uintptr_t)buffers[i].buf;
             if(a<b+buffers[i].len && b<a+bond_buffer.len){
@@ -317,13 +511,35 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     for(int i=0;i<n;++i) {
         if (!(mass[i]>0) || !isfinite(mass[i])) {PyErr_SetString(PyExc_ValueError,"Masses must be positive.");goto cleanup;}
-        for(int d=0;d<3;++d) if(!isfinite(x[3*i+d])||!isfinite(v[3*i+d])||!isfinite(u[3*i+d])) {
+        for(int d=0;d<3;++d) if(!isfinite(v[3*i+d])) {
             PyErr_SetString(PyExc_ValueError,"State arrays must be finite.");goto cleanup;
         }
     }
-    nb.reference = malloc((size_t)n*3*sizeof(double));
-    if(!nb.reference) {PyErr_NoMemory();goto cleanup;}
-    if(build_neighbors(&nb,n,x,u,box,cutoff+skin)<0 || forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
+    const double scalars[WORKSPACE_SCALARS]={cutoff,skin,model,pair,exclude,epsilon,sigma,length,k2,k3,k4};
+    size_t parameter_count=parameters?(size_t)2*n:0, bond_count=bond_parameters&&model?(size_t)2*n:0;
+    Neighbors *nb=&ws->nb;
+    if(unchanged(ws,n,x,u,box,scalars,parameters,parameter_count,bond_parameters,bond_count)) {
+        /* Continue the previous call: its list and forces still hold, and the
+           positions and parameters are the ones it checked. */
+        memcpy(f,ws->f,(size_t)n*3*sizeof(double));
+        potential=ws->potential; virial=ws->virial;
+        ws->current=0;
+    } else {
+        ws->current=0;
+        for(int k=0;k<3*n;++k) if(!isfinite(x[k])||!isfinite(u[k])) {
+            PyErr_SetString(PyExc_ValueError,"State arrays must be finite.");goto cleanup;
+        }
+        if(parameters)for(int i=0;i<2*n;++i)if(!(parameters[i]>0)||!isfinite(parameters[i])){
+            PyErr_SetString(PyExc_ValueError,"Pair epsilon and sigma must be finite and positive.");goto cleanup;
+        }
+        if(bond_parameters)for(int i=0;i<(model?n/2:0);++i){const double *b=bond_parameters+4*i;
+            if(!(b[0]>0)||b[1]<0||b[3]<0||!isfinite(b[0]+b[1]+b[2]+b[3])){
+                PyErr_SetString(PyExc_ValueError,"Invalid bond parameters.");goto cleanup;
+            }
+        }
+        if(prepare_workspace(ws,n)<0)goto cleanup;
+        if(build_neighbors(nb,n,x,u,box,cutoff+skin,-1)<0 || forces(nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
+    }
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
     double dof=3*n-3-(model==2?n/2:0), pressure_numerator=0;
     /* Symmetric isotropic pressure-control splitting. rate = d(log L)/dt.
@@ -358,8 +574,8 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int d=0;d<3;++d){box[d]*=factor;if(!(box[d]>2*cutoff)){PyErr_SetString(PyExc_ValueError,"Box contracted below twice the cutoff.");goto cleanup;}}
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
-        if(needs_rebuild(&nb,n,u,box,cutoff,skin) && build_neighbors(&nb,n,x,u,box,cutoff+skin)<0)goto cleanup;
-        if(forces(&nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
+        if(needs_rebuild(nb,n,u,box,cutoff,skin) && build_neighbors(nb,n,x,u,box,cutoff+skin,-1)<0)goto cleanup;
+        if(forces(nb,n,x,box,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
         kick(n,v,f,mass,0.5*dt);
         if(model==2)constrain_velocities(n,v,x,box,mass);
         if(targetP>=0){
@@ -380,13 +596,14 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             PyErr_Clear(); interrupted=1; break;
         }
     }
-    pressure_numerator=model?molecular_pressure_numerator(&nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):2*kinetic(n,v,mass)+virial;
+    pressure_numerator=model?molecular_pressure_numerator(nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):2*kinetic(n,v,mass)+virial;
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
+    if(result&&ws!=&local)remember(ws,n,x,u,f,box,scalars,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
 
 cleanup:
     if(bond_buffer.obj)PyBuffer_Release(&bond_buffer);
     if(parameter_buffer.obj)PyBuffer_Release(&parameter_buffer);
-    free(nb.pairs);free(nb.reference);
+    release_workspace(&local);
     for(int k=0;k<6;++k) if(buffers[k].obj) PyBuffer_Release(&buffers[k]);
     return result;
 }
@@ -416,12 +633,14 @@ static int gravity_forces(int n, const double *x, const double *mass,
 
 static PyObject *advance_gravity(PyObject *self, PyObject *args) {
     (void)self;
-    PyObject *objects[4], *result=NULL;
+    PyObject *objects[4], *result=NULL, *workspace_object=NULL;
     Py_buffer b[4]={{0}};
+    Workspace local={0}, *ws;
     int requested,done=0,interrupted=0;
     double dt,G,a,heat,U,W;
-    if(!PyArg_ParseTuple(args,"OOOOidddd",&objects[0],&objects[1],&objects[2],&objects[3],
-                         &requested,&dt,&G,&a,&heat))return NULL;
+    if(!PyArg_ParseTuple(args,"OOOOidddd|O",&objects[0],&objects[1],&objects[2],&objects[3],
+                         &requested,&dt,&G,&a,&heat,&workspace_object))return NULL;
+    if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     for(int k=0;k<4;++k){
         if(PyObject_GetBuffer(objects[k],&b[k],PyBUF_C_CONTIGUOUS|PyBUF_FORMAT|(k<3?PyBUF_WRITABLE:0))<0)goto cleanup;
         if(b[k].itemsize!=sizeof(double)||!b[k].format||strcmp(b[k].format,"d")){
@@ -450,7 +669,16 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
             PyErr_SetString(PyExc_ValueError,"Gravity state must be finite.");goto cleanup;
         }
     }
-    if(gravity_forces(n,x,mass,G,a,f,&U,&W)<0)goto cleanup;
+    /* There is no neighbour list here; the workspace keeps the forces between calls. */
+    const double scalars[WORKSPACE_SCALARS]={G,a}, origin[3]={0,0,0};
+    if(unchanged(ws,n,x,NULL,origin,scalars,mass,(size_t)n,NULL,0)){
+        memcpy(f,ws->f,(size_t)n*3*sizeof(double));
+        U=ws->potential; W=ws->virial;
+        ws->current=0;
+    } else {
+        ws->current=0;
+        if(prepare_workspace(ws,n)<0 || gravity_forces(n,x,mass,G,a,f,&U,&W)<0)goto cleanup;
+    }
     while(done<requested){
         kick(n,v,f,mass,.5*dt);
         for(int k=0;k<3*n;++k){
@@ -472,14 +700,44 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
         }
     }
     result=Py_BuildValue("ddii",U,W,done,interrupted);
+    if(result&&ws!=&local)remember(ws,n,x,NULL,f,origin,scalars,mass,(size_t)n,NULL,0,U,W);
 cleanup:
+    release_workspace(&local);
     for(int k=0;k<4;++k)if(b[k].obj)PyBuffer_Release(&b[k]);
     return result;
 }
 
+/* Test helper: the (i, j) pairs within radius, by checking all pairs (reach 0) or with cells. */
+static PyObject *neighbor_pairs(PyObject *self, PyObject *args) {
+    (void)self;
+    PyObject *object, *result = NULL;
+    Py_buffer view = {0};
+    Workspace w = {0};
+    double box[3], radius;
+    int reach;
+    if (!PyArg_ParseTuple(args, "O(ddd)di", &object, &box[0], &box[1], &box[2], &radius, &reach)) return NULL;
+    if (PyObject_GetBuffer(object, &view, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) return NULL;
+    if (view.itemsize != sizeof(double) || !view.format || strcmp(view.format, "d") != 0 || view.ndim != 2 ||
+        view.shape[1] != 3 || view.shape[0] < 2 || view.shape[0] > 20000 || !(radius > 0) || reach < 0 || reach > 2 ||
+        !(box[0] > 0) || !(box[1] > 0) || !(box[2] > 0)) {
+        PyErr_SetString(PyExc_ValueError, "Positions must be float64 (N,3), with a positive box and radius, and reach 0, 1 or 2.");
+        goto cleanup;
+    }
+    int n = (int)view.shape[0];
+    if (prepare_workspace(&w, n) < 0 || build_neighbors(&w.nb, n, view.buf, view.buf, box, radius, reach) < 0) goto cleanup;
+    result = PyBytes_FromStringAndSize((const char *)w.nb.pairs, (Py_ssize_t)(w.nb.size * sizeof(Pair)));
+cleanup:
+    release_workspace(&w);
+    PyBuffer_Release(&view);
+    return result;
+}
+
 static PyMethodDef methods[] = {
+    {"workspace", workspace, METH_NOARGS, "What one run keeps between calls: the neighbour list and the state the solver last returned."},
+    {"neighbor_pairs", neighbor_pairs, METH_VARARGS, "Pairs within a radius as int (i, j) bytes, from all pairs or from cells of reach 1 or 2 (test helper)."},
     {"advance_gravity", advance_gravity, METH_VARARGS, "Advance isolated softened gravity in-place."},
     {"advance", advance, METH_VARARGS, "Advance LJ dynamics in-place; return energy, virial, RNG, steps, interrupt flag, barostat rate and pressure numerator."},
+    {"molecular_workspace", molecular_workspace, METH_NOARGS, "What one run of charged atoms or water keeps between calls: molecule list, PPPM mesh and forces."},
     {"advance_molecular", (PyCFunction)(void(*)(void))advance_molecular, METH_VARARGS|METH_KEYWORDS, "Advance charged atoms or rigid water in-place; return a dict of energies and state."},
     {"project_molecular_velocities", project_molecular_velocities, METH_VARARGS, "Remove velocity components along rigid-water constraints in-place."},
     {"pppm_parameters", pppm_parameters, METH_VARARGS, "Choose PPPM mesh and Ewald parameter from a relative accuracy."},
