@@ -141,7 +141,7 @@ def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='perspe
     if config.get('boundary') == 'open':
         note += ' Isolated cluster: no walls or periodic images. The view may omit distant particles; the solver retains them.'
     data.update(note=note, live=False)
-    script = Path(__file__).with_name('viewer.js').read_text()
+    script = Path(__file__).with_name('viewer.js').read_text(encoding='utf-8')
     markup = (f'<div id="{identifier}"></div><script>(()=>{{' + script +
               f'createMDView(document.getElementById("{identifier}"),{json.dumps(data)});' +
               '})();</script>')
