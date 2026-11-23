@@ -84,13 +84,14 @@ def _arrows(ax, R, background):
 
 
 def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False, False), framed=True,
-               ax=None, view=None, projection='perspective', arrows=True, background='white'):
+               ax=None, view=None, projection='perspective', arrows=True, background='white', tilt=None):
     """Draw atoms into ``ax`` (a new figure if None) and return the Axes.
 
     positions (N, D) and box (D,) are in the system's length unit; radii has one
     display radius per atom. ``walled`` marks the axes with walls; ``framed=False``
     leaves out the box (an open cluster). ``view`` and ``projection`` as in
-    ``System.draw``; ``arrows`` adds x, y, z arrows to a 3D picture.
+    ``System.draw``; ``arrows`` adds x, y, z arrows to a 3D picture. ``tilt``
+    (xy, xz, yz) leans the box edges as in LAMMPS.
     """
     try:
         import matplotlib.pyplot as plt
@@ -124,7 +125,9 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
         order = np.arange(N)
     else:
         R = _rotation(box, view, projection)
-        centre = box/2
+        xy_, xz_, yz_ = (0., 0., 0.) if tilt is None else tilt
+        cell = np.array([[box[0], 0, 0], [xy_, box[1], 0], [xz_, yz_, box[2]]])  # rows: the edges a, b, c
+        centre = cell.sum(axis=0)/2
         p = (positions-centre) @ R.T
         distance = 2.2*np.linalg.norm(box) if framed else 4*np.ptp(positions, axis=0).max()
         scale = distance/(distance-p[:, 2]) if projection == 'perspective' else np.ones(N)
@@ -133,7 +136,7 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
         z = (p[:, 2]-p[:, 2].min())/max(np.ptp(p[:, 2]), 1e-12)
         shade = .55+.45*z  # far atoms fade towards the background
         if framed:
-            corners = np.array([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], dtype=float)*box
+            corners = np.array([[i, j, k] for i in (0, 1) for j in (0, 1) for k in (0, 1)], dtype=float) @ cell
             q = (corners-centre) @ R.T
             qs = distance/(distance-q[:, 2]) if projection == 'perspective' else np.ones(8)
             q2 = q[:, :2]*qs[:, None]

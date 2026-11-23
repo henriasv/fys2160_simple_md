@@ -181,7 +181,8 @@ class SolverTests(unittest.TestCase):
             with self.assertRaises(ValueError):self.sim(**kwargs)
         s=self.sim(N=32)
         sim=MDSimulation(output_dir=self.root)
-        with self.assertRaises(ValueError):s.atoms.positions[0,0]=0
+        s.atoms.positions[0,0]=0.  # a state's arrays are its own, and can be changed
+        self.assertEqual(s._x[0,0],0.)
         with self.assertRaises(ValueError):sim.run(self.system(N=32),steps=1.5)
         with self.assertRaises(ValueError):sim.run(self.system(N=32),heat_rate=1)
         with self.assertRaises(TypeError):sim.run(None)

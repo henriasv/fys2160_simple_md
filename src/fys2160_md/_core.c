@@ -13,7 +13,7 @@ typedef struct { int i, j; } Pair;
    unwrapped positions and box at the build. The rest is work space for the
    cell build, kept between builds. */
 typedef struct {
-    Pair *pairs; size_t size, capacity; double *reference; double box[3];
+    Pair *pairs; size_t size, capacity; double *reference; double box[3], tilt[3];
     Pair *found; size_t found_capacity, *offset;
     double *sorted;
     int *cell, *members, *first, first_capacity;
@@ -47,7 +47,7 @@ typedef struct {
 typedef struct {
     Neighbors nb;
     int n, current, externals;
-    double *x, *u, *f, *tables, box[3], scalars[WORKSPACE_SCALARS], potential, virial;
+    double *x, *u, *f, *tables, box[3], tilt[3], scalars[WORKSPACE_SCALARS], potential, virial;
     double external[EXTERNAL_MAX*EXTERNAL_WIDTH], external_force[EXTERNAL_MAX];
     size_t table_size[2];
 } Workspace;
@@ -67,6 +67,42 @@ static double gaussian(uint64_t *state) {
 static double minimum_image(double x, double length) {
     return x - length * nearbyint(x / length);
 }
+/* A tilted (triclinic) box, as in LAMMPS: edges a = (lx, 0, 0), b = (xy, ly, 0) and
+   c = (xz, yz, lz), with tilt = {xy, xz, yz}. A NULL tilt is a rectangular box, which
+   keeps the per-axis code. The nearest image takes whole edges off z, then y, then
+   x: it rounds the fractional coordinates, which finds the nearest image of any
+   separation shorter than half the smallest distance between opposite faces. */
+static const double NO_TILT[3] = {0, 0, 0};
+static void tilted_image(double dr[3], const double *box, const double *tilt) {
+    double k = nearbyint(dr[2]/box[2]);
+    dr[2] -= k*box[2]; dr[1] -= k*tilt[2]; dr[0] -= k*tilt[1];
+    k = nearbyint(dr[1]/box[1]);
+    dr[1] -= k*box[1]; dr[0] -= k*tilt[0];
+    dr[0] -= box[0]*nearbyint(dr[0]/box[0]);
+}
+/* Fractional coordinates s, with x = s0 a + s1 b + s2 c. */
+static void fractional(const double *x, const double *box, const double *tilt, double *s) {
+    s[2] = x[2]/box[2];
+    s[1] = (x[1] - tilt[2]*s[2])/box[1];
+    s[0] = (x[0] - tilt[0]*s[1] - tilt[1]*s[2])/box[0];
+}
+/* Moves a position by whole edges into the box, the parallelepiped 0 <= s < 1. */
+static void tilted_wrap(double *x, const double *box, const double *tilt) {
+    double s[3];
+    fractional(x, box, tilt, s);
+    double k0 = floor(s[0]), k1 = floor(s[1]), k2 = floor(s[2]);
+    x[0] -= k0*box[0] + k1*tilt[0] + k2*tilt[1];
+    x[1] -= k1*box[1] + k2*tilt[2];
+    x[2] -= k2*box[2];
+}
+/* The distance between the two faces across each axis: volume over face area. */
+static void face_distances(const double *box, const double *tilt, double *w) {
+    double lx = box[0], ly = box[1], lz = box[2], xy = tilt[0], xz = tilt[1], yz = tilt[2], V = lx*ly*lz;
+    w[0] = V/sqrt(ly*lz*ly*lz + xy*lz*xy*lz + (xy*yz - ly*xz)*(xy*yz - ly*xz));
+    w[1] = V/(lx*sqrt(lz*lz + yz*yz));
+    w[2] = lz;
+}
+static int tilted(const double *tilt) { return tilt && (tilt[0] != 0 || tilt[1] != 0 || tilt[2] != 0); }
 static int reserve_pairs(Pair **pairs, size_t *capacity, size_t needed) {
     if (needed <= *capacity) return 0;
     size_t cap = *capacity ? *capacity : 1024;
@@ -106,7 +142,7 @@ static int choose_cells(int n, const double *box, int dimension, double radius, 
    numbers, except NO_IMAGE in a direction that is not periodic. There an atom
    beyond a wall is put in the outermost cell, which is at least as near to its
    neighbours as the atom is. */
-static int build_with_cells(Neighbors *nb, int n, const double *x, const double *box, const double *period,
+static int build_with_cells(Neighbors *nb, int n, const double *x, const double *box, const double *period, const double *tilt,
                             int dimension, const int *periodic, double rmax2, const int grid[3], int reach) {
     int cells = grid[0]*grid[1]*grid[2];
     if (cells + 1 > nb->first_capacity) {
@@ -120,12 +156,17 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
     int *first = nb->first, *members = nb->members, *cell = nb->cell;
     double *sorted = nb->sorted;
     memset(first, 0, ((size_t)cells + 1) * sizeof(int));
-    for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
-        if (d >= dimension) { cell[3*i+d] = 0; continue; }
-        double t = x[3*i+d] / box[d];
-        t = periodic[d] ? t - floor(t) : t < 0 ? 0 : t > 1 ? 1 : t;
-        int c = (int)(t * grid[d]);
-        cell[3*i+d] = c < grid[d] ? c : grid[d] - 1;
+    for (int i = 0; i < n; ++i) {
+        /* A tilted box is divided into cells along its fractional coordinates. */
+        double s[3] = {0, 0, 0};
+        if (tilt) fractional(x + 3*i, box, tilt, s);
+        for (int d = 0; d < 3; ++d) {
+            if (d >= dimension) { cell[3*i+d] = 0; continue; }
+            double t = tilt ? s[d] : x[3*i+d] / box[d];
+            t = periodic[d] ? t - floor(t) : t < 0 ? 0 : t > 1 ? 1 : t;
+            int c = (int)(t * grid[d]);
+            cell[3*i+d] = c < grid[d] ? c : grid[d] - 1;
+        }
     }
     for (int i = 0; i < n; ++i) ++first[(cell[3*i+2]*grid[1] + cell[3*i+1])*grid[0] + cell[3*i] + 1];
     for (int c = 0; c < cells; ++c) first[c+1] += first[c];
@@ -164,7 +205,11 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
                 Pair *out = nb->found;
                 for (int m = begin; m < end; ++m) {
                     double r2 = 0;
-                    for (int d = 0; d < 3; ++d) {
+                    if (tilt) {
+                        double dr[3] = {sorted[3*m] - xj[0], sorted[3*m+1] - xj[1], sorted[3*m+2] - xj[2]};
+                        tilted_image(dr, period, tilt);
+                        r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+                    } else for (int d = 0; d < 3; ++d) {
                         double dx = sorted[3*m+d] - xj[d];
                         dx -= period[d] * nearbyint(dx * inverse[d]);
                         r2 += dx * dx;
@@ -187,15 +232,17 @@ static int build_with_cells(Neighbors *nb, int n, const double *x, const double 
 /* method: 0 checks all pairs, 1 or 2 uses cells with that reach, -1 takes the
    cheapest. All give the same list in the same order. */
 static int build_neighbors(Neighbors *nb, int n, const double *x, const double *u, const double *box,
-                           const double *period, int dimension, const int *periodic, double radius, int method) {
-    double rmax2 = radius * radius;
-    int grid[3], reach = method ? choose_cells(n, box, dimension, radius, grid, method > 0 ? method : 0) : 0;
+                           const double *period, const double *tilt, int dimension, const int *periodic, double radius, int method) {
+    double rmax2 = radius * radius, faces[3];
+    /* Cells must be as wide as the radius measured across the box, between faces. */
+    if (tilt) face_distances(box, tilt, faces);
+    int grid[3], reach = method ? choose_cells(n, tilt ? faces : box, dimension, radius, grid, method > 0 ? method : 0) : 0;
     if (method > 0 && !reach) {
         PyErr_SetString(PyExc_ValueError, "The box is too small for cells of this reach.");
         return -1;
     }
     if (reach) {
-        if (build_with_cells(nb, n, x, box, period, dimension, periodic, rmax2, grid, reach) < 0) return -1;
+        if (build_with_cells(nb, n, x, box, period, tilt, dimension, periodic, rmax2, grid, reach) < 0) return -1;
     } else {
         /* In a box this small a pair half a box apart may be listed under either
            image; the two are equally far, and the forces choose their own. */
@@ -207,7 +254,11 @@ static int build_neighbors(Neighbors *nb, int n, const double *x, const double *
             Pair *out = nb->pairs;
             for (int j = i + 1; j < n; ++j) {
                 double r2 = 0;
-                for (int d = 0; d < 3; ++d) {
+                if (tilt) {
+                    double dr[3] = {xi[0] - x[3*j], xi[1] - x[3*j+1], xi[2] - x[3*j+2]};
+                    tilted_image(dr, period, tilt);
+                    r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+                } else for (int d = 0; d < 3; ++d) {
                     double dx = xi[d] - x[3*j+d];
                     dx -= period[d] * nearbyint(dx * inverse[d]);
                     r2 += dx * dx;
@@ -220,6 +271,7 @@ static int build_neighbors(Neighbors *nb, int n, const double *x, const double *
     }
     memcpy(nb->reference, u, (size_t)n * 3 * sizeof(double));
     memcpy(nb->box, period, 3*sizeof(double));
+    memcpy(nb->tilt, tilt ? tilt : NO_TILT, 3*sizeof(double));
     return 0;
 }
 static void release_workspace(Workspace *w) {
@@ -247,20 +299,22 @@ static int same(const double *kept, const double *now, size_t count) {
     return !count || memcmp(kept, now, count * sizeof(double)) == 0;
 }
 /* table a and table b are constant inputs of the forces (at most 2n doubles each). */
-static int unchanged(const Workspace *w, int n, const double *x, const double *u, const double *box,
+static int unchanged(const Workspace *w, int n, const double *x, const double *u, const double *box, const double *tilt,
                      const double *scalars, const double *a, size_t na, const double *b, size_t nb) {
     return w->current && w->n == n && same(w->scalars, scalars, WORKSPACE_SCALARS) && same(w->box, box, 3) &&
+           same(w->tilt, tilt ? tilt : NO_TILT, 3) &&
            same(w->x, x, (size_t)3*n) && (!u || same(w->u, u, (size_t)3*n)) &&
            w->table_size[0] == na && w->table_size[1] == nb && same(w->tables, a, na) && same(w->tables + 2*(size_t)n, b, nb);
 }
 /* tables is 0 when the call began with them unchanged. */
-static void remember(Workspace *w, int n, const double *x, const double *u, const double *box,
+static void remember(Workspace *w, int n, const double *x, const double *u, const double *box, const double *tilt,
                      const double *scalars, int tables, const double *a, size_t na, const double *b, size_t nb,
                      double potential, double virial) {
     size_t count = (size_t)n * 3 * sizeof(double);
     memcpy(w->x, x, count);
     if (u) memcpy(w->u, u, count);
     memcpy(w->box, box, sizeof w->box); memcpy(w->scalars, scalars, sizeof w->scalars);
+    memcpy(w->tilt, tilt ? tilt : NO_TILT, sizeof w->tilt);
     if (tables) {
         if (na) memcpy(w->tables, a, na * sizeof(double));
         if (nb) memcpy(w->tables + 2*(size_t)n, b, nb * sizeof(double));
@@ -286,7 +340,29 @@ static Workspace *borrowed_workspace(PyObject *object, Workspace *local) {
     return PyCapsule_GetPointer(object, WORKSPACE);
 }
 static int needs_rebuild(const Neighbors *nb, int n, const double *u,
-                         const double *box, double cutoff, double skin) {
+                         const double *box, const double *tilt, double cutoff, double skin) {
+    if (tilted(tilt) || tilted(nb->tilt)) {
+        /* The positions at the build, carried along by the map M = H H0^-1 from the
+           box then to the box now (both upper triangular). */
+        const double *t = tilt ? tilt : NO_TILT, *t0 = nb->tilt, *b0 = nb->box;
+        double w[3], w0[3], smallest = HUGE_VAL;
+        face_distances(box, t, w); face_distances(b0, t0, w0);
+        for (int d = 0; d < 3; ++d) smallest = fmin(smallest, w[d]/w0[d]);
+        double allowance = 0.5*(smallest*(cutoff + skin) - cutoff);
+        if (allowance <= 0) return 1;
+        double a = b0[0], b = t0[0], c = t0[1], d = b0[1], e = t0[2], f = b0[2];
+        double A = box[0], B = t[0], C = t[1], D = box[1], E = t[2], F = box[2];
+        double m00 = A/a, m01 = B/d - A*b/(a*d), m02 = A*(b*e - c*d)/(a*d*f) - B*e/(d*f) + C/f;
+        double m11 = D/d, m12 = E/f - D*e/(d*f), m22 = F/f;
+        for (int i = 0; i < n; ++i) {
+            const double *r = nb->reference + 3*i;
+            double dx = u[3*i] - (m00*r[0] + m01*r[1] + m02*r[2]);
+            double dy = u[3*i+1] - (m11*r[1] + m12*r[2]);
+            double dz = u[3*i+2] - m22*r[2];
+            if (dx*dx + dy*dy + dz*dz > allowance*allowance) return 1;
+        }
+        return 0;
+    }
     double smallest_scale=box[0]/nb->box[0];
     for(int d=1;d<3;++d) smallest_scale=fmin(smallest_scale,box[d]/nb->box[d]);
     double allowance=0.5*(smallest_scale*(cutoff+skin)-cutoff);
@@ -303,7 +379,7 @@ static int needs_rebuild(const Neighbors *nb, int n, const double *u,
 }
 /* Independent nonbonded LJ selection and bonded-pair exclusion.
    Flexible bonds use a polynomial (including the harmonic special case). */
-static int forces(const Neighbors *nb, int n, const double *x, const double *box,
+static int forces(const Neighbors *nb, int n, const double *x, const double *box, const double *tilt,
                   double cutoff, int model, int pair, double epsilon, double sigma, const double *parameters, int exclude, double length, double k2, double k3, double k4, const double *bond_parameters, double *f, double *potential, double *virial) {
     memset(f, 0, (size_t)n * 3 * sizeof(double));
     *potential = 0; *virial = 0;
@@ -313,7 +389,11 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
         int i = nb->pairs[p].i, j = nb->pairs[p].j;
         if(model && exclude && i/2==j/2)continue; /* bonded intramolecular pair excluded */
         double dr[3], r2 = 0;
-        for (int d = 0; d < 3; ++d) {
+        if (tilt) {
+            for (int d = 0; d < 3; ++d) dr[d] = x[3*i+d] - x[3*j+d];
+            tilted_image(dr, box, tilt);
+            r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+        } else for (int d = 0; d < 3; ++d) {
             dr[d] = minimum_image(x[3*i+d] - x[3*j+d], box[d]);
             r2 += dr[d] * dr[d];
         }
@@ -360,16 +440,19 @@ static int forces(const Neighbors *nb, int n, const double *x, const double *box
 }
 /* Positions are wrapped into the box only along periodic directions. */
 static int drift(int n, double *x, double *u, const double *v,
-                 const double *box, const int *periodic, double duration) {
-    for (int i = 0; i < n; ++i) for (int d = 0; d < 3; ++d) {
-        int k = 3*i+d;
-        double dx = duration * v[k];
-        u[k] += dx; x[k] += dx;
-        if (!isfinite(u[k]) || !isfinite(x[k])) {
-            PyErr_SetString(PyExc_FloatingPointError, "Non-finite position; simulation is unstable.");
-            return -1;
+                 const double *box, const double *tilt, const int *periodic, double duration) {
+    for (int i = 0; i < n; ++i) {
+        for (int d = 0; d < 3; ++d) {
+            int k = 3*i+d;
+            double dx = duration * v[k];
+            u[k] += dx; x[k] += dx;
+            if (!isfinite(u[k]) || !isfinite(x[k])) {
+                PyErr_SetString(PyExc_FloatingPointError, "Non-finite position; simulation is unstable.");
+                return -1;
+            }
+            if (periodic[d] && !tilt) x[k] -= box[d] * floor(x[k]/box[d]);
         }
-        if (periodic[d]) x[k] -= box[d] * floor(x[k]/box[d]);
+        if (tilt) tilted_wrap(x + 3*i, box, tilt);
     }
     return 0;
 }
@@ -465,7 +548,7 @@ static int rigid_drift(int n,double *x,double *u,double *v,const double *box,
         }
     }
     static const int periodic[3]={1,1,1};
-    return drift(n,x,u,v,box,periodic,dt);
+    return drift(n,x,u,v,box,NULL,periodic,dt);
 }
 /* Molecular pressure uses COM kinetic energy and intermolecular COM virial.
    It avoids noisy finite-difference constraint-force estimates for rigid bonds. */
@@ -498,6 +581,35 @@ static double molecular_pressure_numerator(const Neighbors *nb,int n,const doubl
     return value;
 }
 
+/* The pressure tensor times the volume, V P_ab = sum m v_a v_b + sum over pairs of
+   r_a f_b, as xx, yy, zz, xy, xz, yz, for unbonded atoms. One pass over the pairs,
+   made only when asked for, so that the force loop is not slowed down. */
+static void stress_numerator(const Neighbors *nb, int n, const double *x, const double *v, const double *mass,
+                             const double *period, const double *tilt, double cutoff, int pair,
+                             double epsilon, double sigma, const double *parameters, double *out) {
+    for (int k = 0; k < 6; ++k) out[k] = 0;
+    for (int i = 0; i < n; ++i) {
+        const double *w = v + 3*i;
+        out[0] += mass[i]*w[0]*w[0]; out[1] += mass[i]*w[1]*w[1]; out[2] += mass[i]*w[2]*w[2];
+        out[3] += mass[i]*w[0]*w[1]; out[4] += mass[i]*w[0]*w[2]; out[5] += mass[i]*w[1]*w[2];
+    }
+    double rc2 = cutoff*cutoff;
+    for (size_t p = 0; p < nb->size; ++p) {
+        int i = nb->pairs[p].i, j = nb->pairs[p].j;
+        double dr[3] = {x[3*i] - x[3*j], x[3*i+1] - x[3*j+1], x[3*i+2] - x[3*j+2]};
+        if (tilt) tilted_image(dr, period, tilt);
+        else for (int d = 0; d < 3; ++d) dr[d] = minimum_image(dr[d], period[d]);
+        double r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+        if (r2 >= rc2) continue;
+        double e = epsilon, s = sigma;
+        if (parameters) { e = sqrt(parameters[2*i])*sqrt(parameters[2*j]); s = .5*parameters[2*i+1] + .5*parameters[2*j+1]; }
+        double inv2 = 1/r2, s2 = s*s*inv2, inv6 = s2*s2*s2;
+        double c = e*(pair ? 18*(inv6*sqrt(inv6) - inv6)*inv2 : 24*inv6*(2*inv6 - 1)*inv2);
+        out[0] += c*dr[0]*dr[0]; out[1] += c*dr[1]*dr[1]; out[2] += c*dr[2]*dr[2];
+        out[3] += c*dr[0]*dr[1]; out[4] += c*dr[0]*dr[2]; out[5] += c*dr[1]*dr[2];
+    }
+}
+
 static PyObject *advance(PyObject *self, PyObject *args) {
     (void)self;
     PyObject *objects[6], *result = NULL, *parameter_object=NULL, *bond_object=NULL, *workspace_object=NULL;
@@ -513,11 +625,13 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     double *sums=NULL, wall[EXTERNAL_MAX]={0}, before[EXTERNAL_MAX]={0}, moved[EXTERNAL_MAX]={0};
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
-    PyObject *record_object=NULL;
+    PyObject *record_object=NULL, *tilt_object=NULL, *stress_object=NULL;
+    Py_buffer tilt_buffer={0}, stress_buffer={0};
+    double *tilt=NULL, *stress=NULL;
     Record rec; memset(&rec,0,sizeof rec);
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOiiOOO", &objects[0], &objects[1],
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOiiOOOOO", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure, &dimension, &external_object, &sums_object, &record_object)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure, &dimension, &external_object, &sums_object, &record_object, &tilt_object, &stress_object)) return NULL;
     if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
@@ -536,6 +650,21 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     int n = (int)buffers[0].shape[0];
     if(record_open(&rec,record_object,n,requested)<0)goto cleanup;
+    /* A tilt of zero is a rectangular box and keeps its per-axis code. */
+    if(tilt_object && tilt_object!=Py_None) {
+        if(PyObject_GetBuffer(tilt_object,&tilt_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT|PyBUF_WRITABLE)<0)goto cleanup;
+        if(tilt_buffer.ndim!=1||tilt_buffer.shape[0]!=3||tilt_buffer.itemsize!=sizeof(double)||!tilt_buffer.format||strcmp(tilt_buffer.format,"d")!=0){
+            PyErr_SetString(PyExc_ValueError,"The tilt must be a writable float64 array of three numbers (xy, xz, yz).");goto cleanup;
+        }
+        if(tilted(tilt_buffer.buf))tilt=tilt_buffer.buf;
+    }
+    if(stress_object && stress_object!=Py_None) {
+        if(PyObject_GetBuffer(stress_object,&stress_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT|PyBUF_WRITABLE)<0)goto cleanup;
+        if(stress_buffer.ndim!=1||stress_buffer.shape[0]!=6||stress_buffer.itemsize!=sizeof(double)||!stress_buffer.format||strcmp(stress_buffer.format,"d")!=0){
+            PyErr_SetString(PyExc_ValueError,"The stress must be a writable float64 array of six numbers.");goto cleanup;
+        }
+        stress=stress_buffer.buf;
+    }
     if(parameter_object){
         if(PyObject_GetBuffer(parameter_object,&parameter_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT)<0)goto cleanup;
         if(parameter_buffer.ndim!=2 || parameter_buffer.shape[0]!=n || parameter_buffer.shape[1]!=2 ||
@@ -621,6 +750,19 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         fixed[d]=periodic[d]?box[d]:NO_IMAGE;
         if(!periodic[d])everywhere=0;
     }
+    if(tilt) {
+        double w[3];
+        if(dimension!=3 || terms || model!=0 || !isfinite(tilt[0]+tilt[1]+tilt[2])) {
+            PyErr_SetString(PyExc_ValueError,"A tilted box is periodic in three dimensions and holds unbonded atoms.");goto cleanup;
+        }
+        if(fabs(tilt[0])>0.5*box[0]*(1+1e-12) || fabs(tilt[1])>0.5*box[0]*(1+1e-12) || fabs(tilt[2])>0.5*box[1]*(1+1e-12)) {
+            PyErr_SetString(PyExc_ValueError,"Each tilt may be at most half the box length it leans along.");goto cleanup;
+        }
+        face_distances(box,tilt,w);
+        for(int d=0;d<3;++d) if(!(w[d]>2*cutoff)) {
+            PyErr_SetString(PyExc_ValueError,"The distance between opposite faces of the tilted box must be greater than twice the cutoff.");goto cleanup;
+        }
+    }
     /* The image distances: the box itself when it is periodic all round (and may
        then change under a barostat), otherwise fixed for the call. */
     const double *period=everywhere?box:fixed;
@@ -633,7 +775,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     const double scalars[WORKSPACE_SCALARS]={cutoff,skin,model,pair,exclude,epsilon,sigma,length,k2,k3,k4,dimension};
     size_t parameter_count=parameters?(size_t)2*n:0, bond_count=bond_parameters&&model?(size_t)2*n:0;
     Neighbors *nb=&ws->nb;
-    const int continued=unchanged(ws,n,x,u,box,scalars,parameters,parameter_count,bond_parameters,bond_count) &&
+    const int continued=unchanged(ws,n,x,u,box,tilt,scalars,parameters,parameter_count,bond_parameters,bond_count) &&
                         ws->externals==terms && same(ws->external,external,(size_t)terms*EXTERNAL_WIDTH);
     ws->current=0;
     if(continued) {
@@ -655,7 +797,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         }
         if(prepare_workspace(ws,n)<0)goto cleanup;
         f=ws->f;
-        if(build_neighbors(nb,n,x,u,box,period,dimension,periodic,cutoff+skin,-1)<0 || forces(nb,n,x,period,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
+        if(build_neighbors(nb,n,x,u,box,period,tilt,dimension,periodic,cutoff+skin,-1)<0 || forces(nb,n,x,period,tilt,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0) goto cleanup;
         external_forces(terms,external,n,x,box,f,&potential,wall);
     }
     uint64_t rng = seed ? seed : UINT64_C(88172645463325252);
@@ -677,19 +819,26 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             double factor=exp(0.5*dt*rate);
             if(!isfinite(factor)||factor<0.9||factor>1.1){PyErr_SetString(PyExc_ValueError,"Unstable barostat; increase pressure damping or reduce timestep.");goto cleanup;}
             for(int d=0;d<3;++d)box[d]*=factor;
+            if(tilt)for(int k=0;k<3;++k)tilt[k]*=factor;
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         if(gamma>0) {
             if(model==2){if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
-            else if(drift(n,x,u,v,box,periodic,0.5*dt)<0)goto cleanup;
+            else if(drift(n,x,u,v,box,tilt,periodic,0.5*dt)<0)goto cleanup;
             thermostat(n,v,mass,T,gamma,dt,&rng,dimension,periodic);
             if(model==2){constrain_velocities(n,v,x,box,mass);if(rigid_drift(n,x,u,v,box,mass,0.5*dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
-            else if(drift(n,x,u,v,box,periodic,0.5*dt)<0)goto cleanup;
+            else if(drift(n,x,u,v,box,tilt,periodic,0.5*dt)<0)goto cleanup;
         } else if(model==2){if(rigid_drift(n,x,u,v,box,mass,dt,length,bond_parameters,&constraint_impulse)<0)goto cleanup;}
-        else if(drift(n,x,u,v,box,periodic,dt)<0)goto cleanup;
+        else if(drift(n,x,u,v,box,tilt,periodic,dt)<0)goto cleanup;
         if(targetP>=0){
             double factor=exp(0.5*dt*rate);
             for(int d=0;d<3;++d){box[d]*=factor;if(!(box[d]>2*cutoff)){PyErr_SetString(PyExc_ValueError,"Box contracted below twice the cutoff.");goto cleanup;}}
+            if(tilt) {
+                double w[3];
+                for(int k=0;k<3;++k)tilt[k]*=factor;
+                face_distances(box,tilt,w);
+                for(int d=0;d<3;++d)if(!(w[d]>2*cutoff)){PyErr_SetString(PyExc_ValueError,"Box contracted below twice the cutoff.");goto cleanup;}
+            }
             for(int k=0;k<3*n;++k){x[k]*=factor;u[k]*=factor;}
         }
         /* The pistons move with the drift, so the forces that follow are those at
@@ -698,8 +847,8 @@ static PyObject *advance(PyObject *self, PyObject *args) {
            kicks give the atoms, and a wall that moved has done the work of minus
            that mean force over its displacement. */
         if(terms){memcpy(before,wall,sizeof wall);move_pistons(terms,external,box,dt,moved);}
-        if(needs_rebuild(nb,n,u,period,cutoff,skin) && build_neighbors(nb,n,x,u,box,period,dimension,periodic,cutoff+skin,-1)<0)goto cleanup;
-        if(forces(nb,n,x,period,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
+        if(needs_rebuild(nb,n,u,period,tilt,cutoff,skin) && build_neighbors(nb,n,x,u,box,period,tilt,dimension,periodic,cutoff+skin,-1)<0)goto cleanup;
+        if(forces(nb,n,x,period,tilt,cutoff,model,pair,epsilon,sigma,parameters,exclude,length,k2,k3,k4,bond_parameters,f,&potential,&virial)<0)goto cleanup;
         if(terms) {
             external_forces(terms,external,n,x,box,f,&potential,wall);
             for(int t=0;t<terms;++t) {
@@ -730,12 +879,16 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
     /* The molecular pressure takes a pass over the pairs; measure=0 leaves it for a later call of zero steps. */
     pressure_numerator=!model?2*kinetic(n,v,mass)+virial:measure?molecular_pressure_numerator(nb,n,x,v,mass,box,cutoff,pair,epsilon,sigma,parameters):NAN;
+    if(stress) {
+        if(model==0) stress_numerator(nb,n,x,v,mass,period,tilt,cutoff,pair,epsilon,sigma,parameters,stress);
+        else for(int k=0;k<6;++k) stress[k]=NAN;
+    }
     result=Py_BuildValue("(ddKiidd)",potential,virial,(unsigned long long)rng,done,interrupted,rate,pressure_numerator);
     if(result) {
         memcpy(buffers[3].buf,f,(size_t)n*3*sizeof(double));
         for(int t=0;t<terms;++t)sums[EXTERNAL_SUMS*t]=wall[t];
         if(ws!=&local) {
-            remember(ws,n,x,u,box,scalars,!continued,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
+            remember(ws,n,x,u,box,tilt,scalars,!continued,parameters,parameter_count,bond_parameters,bond_count,potential,virial);
             ws->externals=terms;
             if(terms)memcpy(ws->external,external,(size_t)terms*EXTERNAL_WIDTH*sizeof(double));
             memcpy(ws->external_force,wall,sizeof wall);
@@ -744,6 +897,8 @@ static PyObject *advance(PyObject *self, PyObject *args) {
 
 cleanup:
     record_close(&rec);
+    if(tilt_buffer.obj)PyBuffer_Release(&tilt_buffer);
+    if(stress_buffer.obj)PyBuffer_Release(&stress_buffer);
     if(sums_buffer.obj)PyBuffer_Release(&sums_buffer);
     if(external_buffer.obj)PyBuffer_Release(&external_buffer);
     if(bond_buffer.obj)PyBuffer_Release(&bond_buffer);
@@ -818,7 +973,7 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
     }
     /* There is no neighbour list here; the workspace keeps the forces between calls. */
     const double scalars[WORKSPACE_SCALARS]={G,a}, origin[3]={0,0,0};
-    const int continued=unchanged(ws,n,x,NULL,origin,scalars,mass,(size_t)n,NULL,0);
+    const int continued=unchanged(ws,n,x,NULL,origin,NULL,scalars,mass,(size_t)n,NULL,0);
     ws->current=0;
     if(continued){
         f=ws->f; U=ws->potential; W=ws->virial;
@@ -851,7 +1006,7 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
     result=Py_BuildValue("ddii",U,W,done,interrupted);
     if(result){
         memcpy(b[2].buf,f,(size_t)n*3*sizeof(double));
-        if(ws!=&local)remember(ws,n,x,NULL,origin,scalars,!continued,mass,(size_t)n,NULL,0,U,W);
+        if(ws!=&local)remember(ws,n,x,NULL,origin,NULL,scalars,!continued,mass,(size_t)n,NULL,0,U,W);
     }
 cleanup:
     record_close(&rec);
@@ -867,10 +1022,10 @@ static PyObject *neighbor_pairs(PyObject *self, PyObject *args) {
     PyObject *object, *result = NULL;
     Py_buffer view = {0};
     Workspace w = {0};
-    double box[3], period[3], radius;
+    double box[3], period[3], radius, tilt[3] = {0, 0, 0};
     int reach, dimension = 3, periodic[3] = {1, 1, 1};
-    if (!PyArg_ParseTuple(args, "O(ddd)di|i(iii)", &object, &box[0], &box[1], &box[2], &radius, &reach,
-                          &dimension, &periodic[0], &periodic[1], &periodic[2])) return NULL;
+    if (!PyArg_ParseTuple(args, "O(ddd)di|i(iii)(ddd)", &object, &box[0], &box[1], &box[2], &radius, &reach,
+                          &dimension, &periodic[0], &periodic[1], &periodic[2], &tilt[0], &tilt[1], &tilt[2])) return NULL;
     if (PyObject_GetBuffer(object, &view, PyBUF_C_CONTIGUOUS | PyBUF_FORMAT) < 0) return NULL;
     if (view.itemsize != sizeof(double) || !view.format || strcmp(view.format, "d") != 0 || view.ndim != 2 ||
         view.shape[1] != 3 || view.shape[0] < 2 || view.shape[0] > 20000 || !(radius > 0) || reach < 0 || reach > 2 ||
@@ -883,7 +1038,8 @@ static PyObject *neighbor_pairs(PyObject *self, PyObject *args) {
         if (d >= dimension) periodic[d] = 0;
         period[d] = periodic[d] ? box[d] : NO_IMAGE;
     }
-    if (prepare_workspace(&w, n) < 0 || build_neighbors(&w.nb, n, view.buf, view.buf, box, period, dimension, periodic, radius, reach) < 0) goto cleanup;
+    if (prepare_workspace(&w, n) < 0 || build_neighbors(&w.nb, n, view.buf, view.buf, box, period, tilted(tilt) ? tilt : NULL,
+                                                        dimension, periodic, radius, reach) < 0) goto cleanup;
     result = PyBytes_FromStringAndSize((const char *)w.nb.pairs, (Py_ssize_t)(w.nb.size * sizeof(Pair)));
 cleanup:
     release_workspace(&w);

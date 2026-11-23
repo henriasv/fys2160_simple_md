@@ -409,3 +409,49 @@ patch in the lower left (`_arrows`; a circle with a dot or cross for an axis alo
 the line of sight); `arrows=False` omits them. `scripts/build_docs.py` makes
 `docs/images/draw_views.png` and `draw_systems.png` (gitignored) for the "Draw a
 picture" section of docs/api/system.md, so the docs build must run before mkdocs.
+
+2026-11-23 (0.5.0, branch claude/triclinic): tilted boxes, strain, the pressure tensor, and
+editable states.
+- Tilted (triclinic) boxes as in LAMMPS: `state.tilt` = (xy, xz, yz), edges a = (lx,0,0),
+  b = (xy,ly,0), c = (xz,yz,lz); each tilt at most half the length it leans along;
+  periodic 3D unbonded atoms only (walls, flat systems, molecules and the molecular
+  engine refuse a tilt). `system.wrap` and C `tilted_wrap` wrap into the parallelepiped
+  (fractional 0 <= s < 1). C `tilted_image` takes whole edges off z, y, x in turn; the
+  result is the unique image inside the rectangle |d_i| <= l_i/2, which is the
+  nearest image whenever it is shorter than half the smallest face distance (checked:
+  face distances > 2*cutoff). A NULL/zero tilt keeps every per-axis code path, so
+  rectangular trajectories are bit-identical (golden tests) and as fast as before
+  (2048-atom liquid 1389 steps/s); tilted runs ~30% slower (972). Cells are laid out
+  in fractional coordinates with counts from face distances; `needs_rebuild` maps the
+  build positions by M = H H0^-1; the isotropic barostat scales the tilt; the tilt is
+  part of the workspace comparison (`Workspace.tilt`, `Neighbors.tilt`). `_core.advance`
+  takes optional trailing `tilt` (writable (3,)) and `stress` ((6,)) after `record`;
+  `neighbor_pairs` takes an optional tilt.
+- `state.strain(xx, yy, zz, yz, xz, xy)`: F = [[1+xx, xy, xz], [0, 1+yy, yz], [0, 0, 1+zz]],
+  H' = F H, positions and unwrapped x' = F x (LAMMPS change_box ... remap), in place.
+- Pressure tensor: `stress_numerator` (one pair pass, only when asked, so the force
+  loop is unchanged) gives V P_ab = sum m v_a v_b + sum r_a f_b; observables `pxx, pyy,
+  pzz, pxy, pxz, pyz` (pxx, pyy, pxy when flat) for unbonded atoms without walls, read
+  by a zero-step call at each thermo row. Checked: the strain derivative of the energy
+  (all six components) and LAMMPS `scripts/validate_triclinic.py` (energy 1e-15,
+  forces 1e-11, tensor 1e-14 with Homebrew lmp_serial lj/cut).
+- Frames and checkpoints store `tilt` when nonzero; `run.tilts`; `run.state` restores it;
+  draw() and viewer.js (`cornerPoint`, `centre`, `cornersAbout`, `span`) draw the
+  parallelepiped. Not yet: tilt in the molecular engine and PPPM (Part C).
+- Editable states (the user wants everything editable, to see what happens):
+  positions, velocities (None = random at the next run), masses, species labels
+  (stored '<U32'), box, tilt, boundary (`_rebuild` through the constructor), time and
+  step; `state.atoms` arrays are the state's own. The next run checks everything (it
+  copies the state through the constructor); a run never changes its input. A nonzero
+  total momentum is refused with the fix in the message. LiveRun getters stay
+  read-only snapshots (so `before = live.positions` keeps its values) and take
+  assignment for positions (unwrapped follow), velocities, masses, box and tilt.
+- `examples/elastic.ipynb` (built by build_docs.py, page docs/examples/elastic.md): LJ FCC,
+  N=500, NPT relax at P=0, T=0.1 (rho 1.059), then NVT strains of +-0.01 in xx and xy
+  (20 000 steps each) give C11 81.5, C12 47.8, C44 49.5 (reduced); VRH moduli -> v_l 9.8,
+  v_t 5.5, omega_D 24.4, theta_D 86 K in argon units (hbar* = 0.0296; argon ~92 K).
+  Einstein omega_E 14.1 (theta_E 50 K) from <u^2> of `run.unwrapped`. The velocity power
+  spectrum (4096 samples via `live.advance(2)`) is drawn against Debye omega^2 and the
+  Einstein line; C_V(T) from it lies between Einstein and Debye and drops below Debye
+  under a few K (finite box: no long waves). About 25 s to execute. Part C (alpha-quartz:
+  metal units, BKS, triclinic PPPM, anisotropic barostat) is planned, not started.

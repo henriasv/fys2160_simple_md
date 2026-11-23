@@ -123,13 +123,31 @@ if(data.live){
   button.hidden=slider.hidden=count.hidden=speedSelect.hidden=true;status.hidden=false;
   canvas.setAttribute('aria-label','Live molecular simulation, drag to rotate');
 }
-slider.max=frames.length-1;const extent=Math.max(...frames.flatMap(f=>f.box));
+slider.max=frames.length-1;
+// A tilted box (as in LAMMPS) has edges a = (lx,0,0), b = (xy,ly,0), c = (xz,yz,lz),
+// with f.tilt = [xy, xz, yz]; corner k takes edge a if bit 0 is set, b for bit 1, c for bit 2.
+function cornerPoint(f,k){
+  const t=f.tilt||[0,0,0],b=f.box,i=k&1,j=(k>>1)&1,l=(k>>2)&1;
+  return [i*b[0]+j*t[0]+l*t[1],j*b[1]+l*t[2],l*b[2]];
+}
+// The box's extent along each axis: its lengths, widened by the tilt.
+function span(f){const t=f.tilt;return t?[f.box[0]+Math.abs(t[0])+Math.abs(t[1]),f.box[1]+Math.abs(t[2]),f.box[2]]:f.box;}
+const extent=Math.max(...frames.flatMap(span));
 // The view is centred on the box. Across an axis with walls the wall at 0 stays
 // where it is on screen and a piston moves, so the centre is that of the first
 // frame's box; a periodic box that changes size stays centred.
 const home=frames[0].box.slice();
 const pinned=home.map((_,d)=>data.boundary==='walls'||(Array.isArray(data.boundary)&&data.boundary[d]==='walls'));
-function centre(f){return f.box.map((v,d)=>.5*(pinned[d]?home[d]:v));}
+function centre(f){
+  const t=f.tilt;
+  if(t)return [.5*(f.box[0]+t[0]+t[1]),.5*(f.box[1]+t[2]),.5*f.box[2]];
+  return f.box.map((v,d)=>.5*(pinned[d]?home[d]:v));
+}
+// The eight box corners about the centre: the camera fits them.
+function cornersAbout(f){
+  if(!f.tilt){const lengths=reach(f);return Array.from({length:8},(_,c)=>lengths.map((v,d)=>(((c>>d)&1)-.5)*v));}
+  const c=centre(f);return Array.from({length:8},(_,k)=>cornerPoint(f,k).map((v,d)=>v-c[d]));
+}
 // Lengths of a box about the centre that holds this frame's box, and every saved frame's along pinned axes.
 function reach(f){return f.box.map((v,d)=>pinned[d]?Math.max(home[d],...frames.map(g=>2*g.box[d]-home[d])):v);}
 function normalize(p,f){const c=centre(f);return p.map((v,d)=>(v-c[d])/extent+.5);}
@@ -171,7 +189,7 @@ const width=Math.max(1,Math.round(bounds.width*dpr));
 const height=Math.max(1,Math.round(bounds.height*dpr));
 if(canvas.width!==width||canvas.height!==height){canvas.width=width;canvas.height=height;}
 const f=frames[+slider.value],edges=[],bonds=[];
-const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize([a&1,(a>>1)&1,(a>>2)&1].map((v,d)=>v*f.box[d]),f)));
+const corners=Array.from({length:8},(_,a)=>cameraPosition(normalize(cornerPoint(f,a),f)));
 for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b&&data.boundary!=="open")edges.push(corners[a],corners[b]);}
 const positions=f.x.map(p=>cameraPosition(normalize(p,f)));
 const pairs=data.bonds||(data.molecular?Array.from({length:Math.floor(positions.length/2)},(_,k)=>[2*k,2*k+1]):[]);
@@ -334,7 +352,8 @@ function startOmovi([lib,THREE]){
   };
   visualizer.initPostProcessing({ssao:{enabled:true,radius:4*mean,intensity:5}});
   const particles=new lib.Particles(types.length);
-  types.forEach((t,i)=>particles.add(...first.x[i].map((v,d)=>v-.5*first.box[d]),i,t));
+  const firstCentre=centre(first);
+  types.forEach((t,i)=>particles.add(...first.x[i].map((v,d)=>v-firstCentre[d]),i,t));
   visualizer.add(particles);
   const pairs=data.bonds||(data.molecular?Array.from({length:Math.floor(types.length/2)},(_,k)=>[2*k,2*k+1]):[]);
   const bonds=pairs.length?new lib.Bonds(pairs.length):null;
@@ -382,8 +401,8 @@ function startOmovi([lib,THREE]){
     const up=[direction[1]*right[2]-direction[2]*right[1],direction[2]*right[0]-direction[0]*right[2],direction[0]*right[1]-direction[1]*right[0]];
     const camera=visualizer.perspectiveCamera,tan=Math.tan(Math.PI*camera.fov/360);
     let distance=0;
-    for(let c=0;c<8;c++){
-      const corner=lengths.map((v,d)=>(((c>>d)&1)-.5)*v),depth=dot(corner,direction);
+    for(const corner of cornersAbout(frames[+slider.value])){
+      const depth=dot(corner,direction);
       distance=Math.max(distance,depth+Math.abs(dot(corner,right))/(tan*aspect()),depth+Math.abs(dot(corner,up))/tan);
     }
     const magnification=data.zoom||1;
@@ -399,9 +418,9 @@ function startOmovi([lib,THREE]){
     const camera=visualizer.orthographicCamera;camera.updateMatrixWorld();
     const right=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,0);
     const up=new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld,1);
-    const lengths=reach(frames[+slider.value]);let across=0,high=0;
-    for(let c=0;c<8;c++){
-      const corner=new THREE.Vector3(...lengths.map((v,d)=>(((c>>d)&1)-.5)*v));
+    let across=0,high=0;
+    for(const point of cornersAbout(frames[+slider.value])){
+      const corner=new THREE.Vector3(...point);
       across=Math.max(across,Math.abs(corner.dot(right)));high=Math.max(high,Math.abs(corner.dot(up)));
     }
     const half=1.05*Math.max(high+largest,(across+largest)/aspect())/(data.zoom||1);  // atoms on the faces stick out
@@ -423,7 +442,7 @@ function startOmovi([lib,THREE]){
     }
     const edge=box.geometry.attributes.position.array;let k=0;
     for(let a=0;a<8;a++)for(let d=0;d<3;d++){const b=a^(1<<d);if(a<b){
-      for(const corner of [a,b])for(let e=0;e<3;e++)edge[k++]=((corner>>e)&1)*f.box[e]-c[e];
+      for(const corner of [a,b]){const p=cornerPoint(f,corner);for(let e=0;e<3;e++)edge[k++]=p[e]-c[e];}
     }}
     box.geometry.attributes.position.needsUpdate=true;
     visualizer.forceRender=true;

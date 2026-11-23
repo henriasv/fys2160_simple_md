@@ -83,7 +83,8 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.dimension` | 3, or 2 for a flat system: the number of columns of positions and velocities |
 | `system.walls` | Names of the walls, such as `("left", "right", "bottom", "top")`; empty for a periodic box |
 | `system.rho` | Current N / volume (N / area for a flat system); NaN for an unconfined cluster |
-| `system.box`, `.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system). The box can be changed in place, `system.box[0] *= 2` ([below](#change-the-box)) |
+| `system.box`, `.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system). The box can be changed in place, `system.box[0] *= 2` ([below](#change-a-state)) |
+| `system.positions`, `.velocities`, `.masses` | The state's own arrays, which can be changed ([below](#change-a-state)) |
 | `system.atoms.positions`, `.masses` | Read-only array snapshots |
 | `system.atoms.velocities` | Read-only snapshot, or None before velocities are assigned |
 | `system.atoms.molecule_ids` | IDs identifying molecular partners |
@@ -145,26 +146,73 @@ with x and y axes, solid walls and dashed periodic sides.
 `radius` sets the display radius, a number or one per species; the default is 0.5
 (sigma = 1), the player's sizes for water and 0.035 for an open cluster.
 
-## Change the box
+## Change a state
 
-The box is the one thing in a state that can be changed directly:
+Everything in a state can be changed directly, to see what happens:
 
 ```python
 state = run.state
-state.box[0] *= 2          # twice as long along x
-state.box[:] = 20, 20, 20  # or set every length
+state.box[0] *= 2                    # twice as long along x
+state.positions[0, 0] += 0.5         # move atom 0
+state.velocities *= 1.1              # 21% hotter
+state.masses[:100] = 4               # heavier atoms
+state.atoms.species[:100] = "B"      # relabel atoms
+state.boundary = "walls"             # put walls on every face
+state.tilt[0] = 1.0                  # lean the box (a tilted box, below)
 next_run = sim.run(state, steps=1000)
 ```
 
-The atoms keep their positions; the next run starts from the new box. Across a
-periodic axis, atoms that are now outside the box are wrapped back in. A smaller
-box can therefore put atoms almost on top of each other, which makes the run blow
-up: shrink a dense system a little at a time, or let a barostat (`ensemble="npt"`)
-do it. Between walls, the wall at 0 stays and the far wall moves to the new
-length; every atom must still be inside, so squeeze atoms with a
-[piston](../walls.md) instead. `run.state` is the same state each time you read
-it, so `run.state.box[0] *= 2` is kept for `sim.run(run.state)`. `with_box`
-instead centres the contents in a larger periodic box.
+Whole arrays can also be replaced, `state.positions = new_positions`, and
+`state.velocities = None` gives random velocities at the next run's temperature.
+`state.time` and `state.step` can be set too. A run never changes the state it is
+given; it works on a copy. The number of atoms, the molecule model and bonds, and
+the units stay as built: make a new state for those.
+
+The next run checks what you changed, and some changes have consequences worth
+seeing:
+
+- **Box and positions.** Atoms keep their positions. Across a periodic axis, atoms
+  outside the box are wrapped back in, so a smaller box can put atoms almost on top
+  of each other, which makes the run blow up: shrink a dense system a little at a
+  time, or let a barostat (`ensemble="npt"`) do it. Between walls, the wall at 0
+  stays and the far wall moves to the new length; every atom must still be inside,
+  so squeeze atoms with a [piston](../walls.md) instead. `with_box` instead centres
+  the contents in a larger periodic box.
+- **Velocities.** Along a periodic direction the total momentum must be zero, or the
+  whole system drifts (and the temperature counts the drift as heat). After kicking
+  one atom, subtract the mean:
+  `state.velocities -= np.average(state.velocities, axis=0, weights=state.masses)`.
+- **Species.** Per-species interactions (`epsilon`, `sigma`) must name every species
+  in the state.
+
+`run.state` is the same state each time you read it, so `run.state.box[0] *= 2` is
+kept for `sim.run(run.state)`. A running simulation (`sim.start`) can be changed
+too, by assignment ([advance a run yourself](simulation.md#advance-a-run-yourself)).
+
+## Tilted boxes
+
+```python
+crystal = FCC(N=500, rho=1.0)
+crystal.strain(xy=0.01)      # shear: the y edge leans by 1% of its length along x
+crystal.tilt                 # (xy, xz, yz) = (0.0794, 0, 0)
+sheared = sim.run(crystal, steps=5000, thermo_every=10, trajectory_every=None)
+sheared.thermo["pxy"].mean()                 # the shear stress is minus this
+```
+
+A box can be tilted (triclinic), as in LAMMPS: its edges are a = (lx, 0, 0),
+b = (xy, ly, 0) and c = (xz, yz, lz), with the lengths in `state.box` and the
+tilt factors (xy, xz, yz) in `state.tilt`. Each tilt may be at most half the length
+it leans along, and the distance between opposite faces must be more than twice
+the cutoff. Tilted boxes are periodic in three dimensions and hold unbonded atoms.
+
+`state.strain(xx=..., yy=..., zz=..., yz=..., xz=..., xy=...)` stretches or shears
+the box and moves every atom with it, so a crystal is deformed rather than cut:
+`xx=0.01` makes x 1% longer, and `xy=0.01` is a shear that leans the y edge by 1%
+of its length along x. Setting `state.tilt` directly instead leaves the atoms where
+they are, as editing the box does. Every run of unbonded atoms without walls
+records the pressure tensor (`pxx`, ..., `pyz`); an elastic constant is the change
+in stress over a small strain, for example `C44 = -(pxy(+e) - pxy(-e))/(2e)` for a
+cubic crystal sheared by `xy = e`.
 
 ### Reverse or perturb velocities
 

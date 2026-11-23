@@ -45,6 +45,7 @@ This needs WebGL 2, but no Python kernel, remote scripts or simulation server.
 | Energy | `kinetic_energy`, `potential_energy`, `total_energy` |
 | Response | `compressibility_factor`, `enthalpy`, `heat_added` |
 | Pressure control | `barostat_energy`, `extended_enthalpy` |
+| Pressure tensor | `pxx`, `pyy`, `pzz`, `pxy`, `pxz`, `pyz` (`pxx`, `pyy`, `pxy` for a flat system), for unbonded atoms without walls. The stress is its negative; the mean of the diagonal is `pressure` |
 | Walls | For each wall, `wall_force_<name>` (now, positive outwards) and `wall_impulse_<name>` (momentum received so far); `work` done on the atoms by moving walls; `piston_position` during a run with a piston. See [walls](../walls.md) |
 
 **Energies are totals.** Divide by N for energy per atom or molecule.

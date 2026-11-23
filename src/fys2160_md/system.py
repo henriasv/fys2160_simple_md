@@ -56,6 +56,24 @@ class Box(np.ndarray):
         return float(np.prod(self))
 
 
+def _check_tilt(lengths, tilt):
+    """LAMMPS's limits for a tilted box: each tilt at most half the length it leans along."""
+    limits = np.array([lengths[0], lengths[0], lengths[1]])/2
+    if np.any(np.abs(tilt) > limits*(1+1e-12)):
+        raise ValueError('Each tilt may be at most half the box length it leans along: |xy| and |xz| at most '
+                         f'{limits[0]:g} (half of x), |yz| at most {limits[2]:g} (half of y).')
+
+
+def wrap(x, lengths, tilt):
+    """Positions (N, 3) moved by whole box vectors into the box: the parallelepiped with
+    edges a = (lx, 0, 0), b = (xy, ly, 0), c = (xz, yz, lz) when tilted."""
+    lx, ly, lz = lengths
+    xy, xz, yz = tilt
+    edges = np.array([[lx, 0, 0], [xy, ly, 0], [xz, yz, lz]])  # rows a, b, c
+    fractional = np.linalg.solve(edges.T, np.asarray(x, dtype=float).T).T
+    return np.asarray(x, dtype=float)-np.floor(fractional) @ edges
+
+
 @dataclass(frozen=True)
 class Atoms:
     positions: np.ndarray
@@ -74,8 +92,10 @@ class System:
     ``MDSimulation.run(system, ...)`` evolves a copy and never changes this one;
     the run's final state is ``run.state``. A state from a run also carries the
     simulation time, step count and thermostat/barostat state, so continuing from
-    it is identical to one longer run. All public arrays are read-only snapshots,
-    except the box: ``state.box[0] *= 2`` changes the box the next run starts with.
+    it is identical to one longer run. Its parts can be changed in place, to see
+    what happens: positions, velocities, masses, species labels, box, tilt,
+    boundary, time and step (``state.box[0] *= 2``, ``state.velocities *= 1.1``).
+    The next run checks the result; a run never changes the state it is given.
 
     Positions with two columns and a box with two lengths make a flat,
     two-dimensional system: ``dimension`` is 2, velocities have two columns and
@@ -86,7 +106,7 @@ class System:
     """
 
     def __init__(self, positions, box, *, velocities=None, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced",
-                 unwrapped=None, time=0., step=0):
+                 unwrapped=None, time=0., step=0, tilt=None):
         x=np.array(positions,dtype=float,order='C',copy=True)
         if x.ndim!=2 or x.shape[1] not in (2,3) or not np.isfinite(x).all():
             raise ValueError('positions must be a finite (N,3) array, or (N,2) for a flat system.')
@@ -108,6 +128,16 @@ class System:
             raise ValueError(f'box must be one length or {D} lengths, to match positions with {D} columns.') from None
         if not np.isfinite(lengths).all() or np.any(lengths<=0):
             raise ValueError('box lengths must be finite and positive.')
+        try:
+            tilts=np.zeros(3) if tilt is None else np.broadcast_to(np.asarray(tilt,dtype=float),(3,)).copy()
+        except ValueError:
+            raise ValueError('tilt must be three numbers: xy, xz and yz.') from None
+        if not np.isfinite(tilts).all():
+            raise ValueError('tilt must be finite.')
+        if tilts.any():
+            if D!=3 or boundary!='periodic' or resolve_model(model, molecule, bond)[0]!='atomic':
+                raise ValueError('A tilted box is periodic in three dimensions and holds unbonded atoms.')
+            _check_tilt(lengths, tilts)
         # A state taken from a run may hold an atom in the middle of a bounce, a
         # little beyond a wall; further out the wall would throw it back hard.
         if np.any(x[:,walled]<-_BEYOND) or np.any(x[:,walled]>lengths[walled]+_BEYOND):
@@ -125,7 +155,10 @@ class System:
             raise ValueError('species must be a name or one string label per atom.')
         if any(not str(name).strip() or str(name) != str(name).strip() for name in labels):
             raise ValueError('Species names must be nonempty strings without surrounding spaces.')
-        self._species = labels.astype(str, copy=True)
+        if any(len(str(name)) > 32 for name in labels):
+            raise ValueError('Species names may be at most 32 characters long.')
+        # Room for any name up to 32 characters, so a label can be changed in place.
+        self._species = labels.astype('<U32', copy=True)
         if isinstance(bond,dict) and np.any(self._species[::2] != self._species[1::2]):
             raise ValueError('Per-species bonds require homonuclear pairs; use a shared bond for heteronuclear molecules.')
         if model=='water-rigid' and (np.any(self._species[1::3] != self._species[2::3]) or np.any(self._species[0::3] == self._species[1::3])):
@@ -136,12 +169,17 @@ class System:
             raise ValueError('Bond length must be less than half the shortest box side.')
         self._model=model
         self._N=_integer(len(x)//_SIZE[model],'N',2)
-        if boundary != "open":
+        if tilts.any():
+            x=wrap(x,lengths,tilts)
+        elif boundary != "open":
             x[:,~walled]%=lengths[~walled]
         # The solver works in three dimensions: a flat system has z = 0 throughout
         # and a box of thickness 0. The public arrays have D columns.
         self._box=np.zeros(3)
         self._box[:D]=lengths
+        # Tilt factors xy, xz, yz as in LAMMPS: the box edges are a = (lx, 0, 0),
+        # b = (xy, ly, 0) and c = (xz, yz, lz); all zero for a rectangular box.
+        self._tilt=tilts
         self._x=self._columns(x)
         self._mass=np.ones(len(x)) if masses is None else np.array(masses,dtype=float,order='C',copy=True)
         if self._mass.shape!=(len(x),) or not np.isfinite(self._mass).all() or np.any(self._mass<=0):
@@ -196,8 +234,27 @@ class System:
     def boundary(self):
         """"periodic", "walls" (a wall on every face), one of the two per axis, or "open".
 
-        Open systems use box only as a viewing frame, without walls or images."""
+        Open systems use box only as a viewing frame, without walls or images.
+        It can be changed, ``state.boundary = "walls"``: every atom must then be
+        inside the box, between the new walls."""
         return self._boundary
+
+    @boundary.setter
+    def boundary(self, boundary):
+        self._rebuild(boundary=boundary)
+        self._wall_sums = None  # new walls have received no impulse yet
+
+    def _rebuild(self, **changes):
+        """Check a change by building the state anew, then take it over in place."""
+        values = dict(positions=self._x[:, :self._dim], box=self._box[:self._dim], velocities=self.velocities,
+                      masses=self._mass, model=self.model, bond=self.bond, species=self._species,
+                      boundary=self._boundary, units=self._units, unwrapped=None if self._u is None else self._u[:, :self._dim],
+                      time=self._time, step=self._step, tilt=self._tilt)
+        values.update(changes)
+        other = System(values.pop('positions'), values.pop('box'), **values)
+        other._rng, other._rate, other._heat, other._pppm, other._wall_sums = (
+            self._rng, self._rate, self._heat, self._pppm, self._wall_sums)
+        self.__dict__.update(other.__dict__)
 
     @property
     def dimension(self):
@@ -212,13 +269,24 @@ class System:
 
     @property
     def time(self):
-        """Simulation time of this state, in the system's time unit."""
+        """Simulation time of this state, in the system's time unit; it can be set."""
         return self._time
+
+    @time.setter
+    def time(self, value):
+        value = float(value)
+        if not np.isfinite(value):
+            raise ValueError('time must be finite.')
+        self._time = value
 
     @property
     def step(self):
-        """Number of MD steps taken to reach this state."""
+        """Number of MD steps taken to reach this state; it can be set."""
         return self._step
+
+    @step.setter
+    def step(self, value):
+        self._step = _integer(value, 'step', 0)
 
     @property
     def units(self):
@@ -272,13 +340,109 @@ class System:
         """
         return self._box[:self._dim].view(Box)
 
+    @property
+    def tilt(self):
+        """Tilt factors (xy, xz, yz) of a tilted (triclinic) box, which can be changed.
+
+        As in LAMMPS, the box edges are a = (lx, 0, 0), b = (xy, ly, 0) and
+        c = (xz, yz, lz): xy leans the y edge along x, and so on. Each tilt may be
+        at most half the length it leans along. All zero for a rectangular box.
+        ``state.tilt[0] = 1.5`` keeps the atoms where they are, as editing the box
+        does; ``state.strain(xy=0.01)`` shears the atoms with the box.
+        """
+        return self._tilt
+
+    def strain(self, *, xx=0., yy=0., zz=0., yz=0., xz=0., xy=0.):
+        """Stretch or shear the box and the atoms with it, in place.
+
+        ``xx``, ``yy``, ``zz`` change a length by that fraction; ``yz``, ``xz``, ``xy``
+        are shear strains: ``xy=0.01`` leans the y edge by 0.01 times its length along
+        x. Every position moves with the box (as LAMMPS ``change_box ... remap``), so a
+        crystal is stretched or sheared rather than cut. Velocities are kept. For an
+        elastic constant, strain by a small amount and compare the stress.
+        """
+        F=np.array([[1+xx,xy,xz],[0,1+yy,yz],[0,0,1+zz]],dtype=float)
+        if not np.isfinite(F).all() or min(1+xx,1+yy,1+zz)<=0:
+            raise ValueError('Strains must be finite, and each length must stay positive.')
+        if self._dim!=3 or self.boundary!='periodic' or self.model!='atomic':
+            raise ValueError('strain works on a periodic three-dimensional box of unbonded atoms.')
+        lx,ly,lz=self._box
+        xyt,xzt,yzt=self._tilt
+        H=F@np.array([[lx,xyt,xzt],[0,ly,yzt],[0,0,lz]])
+        lengths,tilts=np.diag(H).copy(),np.array([H[0,1],H[0,2],H[1,2]])
+        _check_tilt(lengths,tilts)
+        self._x=np.ascontiguousarray(wrap(self._x@F.T,lengths,tilts))
+        if self._u is not None:
+            self._u=np.ascontiguousarray(self._u@F.T)
+        self._box[:]=lengths
+        self._tilt[:]=tilts
+
     def _public(self, array):
         return None if array is None else _readonly(array[:,:self._dim])
 
     @property
+    def positions(self):
+        """Positions, one row per atom: (x, y, z), or (x, y) for a flat system.
+
+        They can be changed: ``state.positions[0, 0] += 0.5`` moves atom 0 along x,
+        and ``state.positions = new`` replaces them all. The next run checks them:
+        atoms outside a periodic box are wrapped back in, and between walls every
+        atom must be inside.
+        """
+        return self._x[:, :self._dim]
+
+    @positions.setter
+    def positions(self, value):
+        value = np.asarray(value, dtype=float)
+        if value.shape != (len(self._x), self._dim):
+            raise ValueError(f'positions must have one row per atom: shape ({len(self._x)}, {self._dim}).')
+        self._x[:, :self._dim] = value
+
+    @property
+    def velocities(self):
+        """Velocities, one row per atom, or None: then a run starts with random ones at its temperature.
+
+        They can be changed: ``state.velocities *= 1.1`` heats the system up, and
+        ``state.velocities[0] += (1, 0, 0)`` kicks atom 0. A run along a periodic
+        direction needs zero total momentum: after kicking one atom, subtract the
+        mean, ``state.velocities -= np.average(state.velocities, axis=0, weights=state.masses)``.
+        """
+        return None if self._v is None else self._v[:, :self._dim]
+
+    @velocities.setter
+    def velocities(self, value):
+        if value is None:
+            self._v = None
+            return
+        value = np.asarray(value, dtype=float)
+        if value.shape != (len(self._x), self._dim):
+            raise ValueError(f'velocities must have one row per atom: shape ({len(self._x)}, {self._dim}).')
+        if self._v is None:
+            self._v = np.zeros_like(self._x)
+        self._v[:, :self._dim] = value
+
+    @property
+    def masses(self):
+        """Mass of each atom; they can be changed, ``state.masses[:10] = 4``."""
+        return self._mass
+
+    @masses.setter
+    def masses(self, value):
+        value = np.asarray(value, dtype=float)
+        if value.shape != self._mass.shape:
+            raise ValueError(f'masses must have one value per atom: shape ({len(self._mass)},).')
+        self._mass[:] = value
+
+    @property
     def atoms(self):
+        """Positions, velocities, masses, molecule numbers and species of the atoms.
+
+        positions, velocities, masses and species are the state's own arrays and can
+        be changed in place (``state.atoms.species[:50] = "B"``); molecule numbers
+        follow from the model.
+        """
         ids=np.arange(len(self._x))//_SIZE[self.model]
-        return Atoms(self._public(self._x),self._public(self._v),_readonly(self._mass),_readonly(ids),_readonly(self._species))
+        return Atoms(self.positions,self.velocities,self._mass,_readonly(ids),self._species)
 
     @property
     def _conserved(self):
@@ -298,7 +462,7 @@ class System:
 
     def _copy(self, velocities):
         other=System(self._public(self._x),self._box[:self._dim],velocities=velocities,masses=self._mass,model=self.model,bond=self.bond,species=self._species,boundary=self.boundary,units=self.units,
-                     unwrapped=self._public(self._u),time=self._time,step=self._step)
+                     unwrapped=self._public(self._u),time=self._time,step=self._step,tilt=self._tilt)
         other._rng,other._rate,other._heat=self._rng,self._rate,self._heat
         other._pppm=None if self._pppm is None else (self._pppm[0].copy(),)+tuple(self._pppm[1:])
         other._wall_sums=None if self._wall_sums is None else self._wall_sums.copy()
@@ -335,6 +499,8 @@ class System:
         """
         if self.boundary=='open':
             raise ValueError('with_box needs a box: periodic or with walls.')
+        if self._tilt.any():
+            raise ValueError('with_box works on a rectangular box; this one is tilted.')
         D=self._dim
         old=self._box[:D]
         walled=np.array(self._walled)
@@ -384,7 +550,7 @@ class System:
         return draw_atoms(self._x[:, :self._dim], self._box[:self._dim], self._species,
                           display_radii(self._species, self.model, radius), bonds=self.bonds,
                           walled=tuple(self._walled), framed=self.boundary != 'open', ax=ax, view=view,
-                          projection=projection, arrows=arrows)
+                          projection=projection, arrows=arrows, tilt=self._tilt)
 
     @classmethod
     def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
@@ -392,4 +558,6 @@ class System:
 
     def __repr__(self):
         shape = '' if self._dim==3 and self._boundary=='periodic' else f'dimension={self._dim}, boundary={self._boundary!r}, '
+        if self._tilt.any():
+            shape += f'tilt={self._tilt.tolist()}, '
         return f'System({shape}model={self.model!r}, N={self.N}, rho={self.rho:g}, velocities={self._v is not None}, time={self._time:g}, step={self._step})'

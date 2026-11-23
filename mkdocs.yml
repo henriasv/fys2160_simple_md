@@ -30,6 +30,7 @@ nav:
   - NPT temperature sweep: examples/isobar.md
   - Gravity & negative heat capacity: examples/gravity.md
   - Liquid water models: examples/water.md
+  - Elastic constants, Debye and Einstein: examples/elastic.md
 - API reference:
   - System & geometry: api/system.md
   - MDSimulation: api/simulation.md
