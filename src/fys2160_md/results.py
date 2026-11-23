@@ -40,6 +40,10 @@ class Run:
         It holds positions, velocities, box, masses and species, plus the clock
         and thermostat/barostat state, so continuing from it matches one longer run.
         """
+        # One state per Run, so that a change such as run.state.box[0] *= 2 is
+        # kept for the next sim.run(run.state).
+        if getattr(self, '_state', None) is not None:
+            return self._state
         from .system import System
         from .bonds import read_bond
         if self.metadata.get('status') not in ('completed', 'interrupted') or not (self.path/'checkpoint.npz').exists():
@@ -60,6 +64,7 @@ class Run:
             if 'pppm_settings' in data:
                 accuracy, cutoff = (float(v) for v in data['pppm_settings'])
                 state._pppm = (data['pppm_state'].copy(), accuracy, cutoff)
+        self._state = state
         return state
 
     @property

@@ -43,14 +43,17 @@ def _readonly(array):
     return result
 
 
-@dataclass(frozen=True)
-class Box:
-    lengths: np.ndarray
+class Box(np.ndarray):
+    """Box lengths, one per axis: an array, so ``state.box[0] *= 2`` doubles x."""
+
+    @property
+    def lengths(self):
+        return self.view(np.ndarray)
 
     @property
     def volume(self):
         """Product of the lengths: the area of a flat (two-dimensional) box."""
-        return float(np.prod(self.lengths))
+        return float(np.prod(self))
 
 
 @dataclass(frozen=True)
@@ -71,7 +74,8 @@ class System:
     ``MDSimulation.run(system, ...)`` evolves a copy and never changes this one;
     the run's final state is ``run.state``. A state from a run also carries the
     simulation time, step count and thermostat/barostat state, so continuing from
-    it is identical to one longer run. All public arrays are read-only snapshots.
+    it is identical to one longer run. All public arrays are read-only snapshots,
+    except the box: ``state.box[0] *= 2`` changes the box the next run starts with.
 
     Positions with two columns and a box with two lengths make a flat,
     two-dimensional system: ``dimension`` is 2, velocities have two columns and
@@ -107,7 +111,8 @@ class System:
         # A state taken from a run may hold an atom in the middle of a bounce, a
         # little beyond a wall; further out the wall would throw it back hard.
         if np.any(x[:,walled]<-_BEYOND) or np.any(x[:,walled]>lengths[walled]+_BEYOND):
-            raise ValueError('Every atom must start between the walls: coordinates from 0 to the box length.')
+            raise ValueError('Every atom must start between the walls: coordinates from 0 to the box length. '
+                             'To squeeze the atoms between walls, move a wall with a Piston.')
         if model not in MODELS:
             raise ValueError(f'model must be one of {tuple(MODELS)}')
         if model.startswith('diatomic') and len(x)%2:
@@ -257,7 +262,15 @@ class System:
 
     @property
     def box(self):
-        return Box(_readonly(self._box[:self._dim]))
+        """Box lengths, one per axis (two for a flat system), which can be changed.
+
+        ``state.box[0] *= 2`` doubles the x length; ``state.box[:] = 20, 20, 20``
+        sets all three. Atoms keep their positions. The next run starts from the
+        new box: across a periodic axis atoms outside it are wrapped back in, so a
+        smaller box can bring atoms close together; between walls, the far wall
+        moves and every atom must stay inside.
+        """
+        return self._box[:self._dim].view(Box)
 
     def _public(self, array):
         return None if array is None else _readonly(array[:,:self._dim])

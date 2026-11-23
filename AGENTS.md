@@ -15,8 +15,10 @@ This repository contains the standalone course MD package. Python import:
   `set(temperature=...)`, `settings` and `state`. `run` is that loop with files.
   New observables and controls (walls, pistons, external potentials) belong in
   `observables` and as keywords of `start`/`set`, not in new methods.
-- `state.with_velocities(v)` and `state.with_box(box)` return changed copies;
-  states are never edited in place.
+- `state.with_velocities(v)` and `state.with_box(box)` return changed copies.
+  The box is the one editable part of a state (`state.box[0] *= 2`, for students);
+  runs never change the state they are given, and `Run.state` is cached per Run so
+  that an edit of `run.state` reaches the next run.
 - Two dimensions and walls (atoms in reduced units only): a box with two lengths
   is flat; `boundary="walls"` or one word per axis. The solver always works on
   (N,3) arrays; a flat system has z = 0 and box[2] = 0 inside `System`/`_Engine`
@@ -361,3 +363,13 @@ averages agree. 91 Python tests and the viewer checks pass; the Pyodide smoke te
 also runs a piston. Thermostat noise is one sequence per `seed`: runs that should be
 independent need different seeds (`sim.start(state, seed=...)`), not only different
 starting positions.
+
+2026-11-23: `state.box` is the state's own length array (an ndarray subclass `Box`
+with `.lengths` and `.volume`), so `state.box[0] *= 2` changes the box the next run
+starts with. Positions are kept; the next run copies the state through the `System`
+constructor, which wraps periodic axes and refuses atoms more than 1 beyond a wall
+(the message points to `Piston`). A sudden squeeze of a dense periodic box overlaps
+atoms and blows the run up (T* ~ 1e38 in a test; the solver does not stop it).
+`Run.state` is cached on the Run object. `tests/test_box_edit.py`. Not released:
+`_version.py` is unchanged. The dev `.venv` extension had to be rebuilt in place
+(`python setup.py build_ext --inplace`) after the merged solver changes.

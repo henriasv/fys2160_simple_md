@@ -83,7 +83,7 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.dimension` | 3, or 2 for a flat system: the number of columns of positions and velocities |
 | `system.walls` | Names of the walls, such as `("left", "right", "bottom", "top")`; empty for a periodic box |
 | `system.rho` | Current N / volume (N / area for a flat system); NaN for an unconfined cluster |
-| `system.box.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system) |
+| `system.box`, `.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system). The box can be changed in place, `system.box[0] *= 2` ([below](#change-the-box)) |
 | `system.atoms.positions`, `.masses` | Read-only array snapshots |
 | `system.atoms.velocities` | Read-only snapshot, or None before velocities are assigned |
 | `system.atoms.molecule_ids` | IDs identifying molecular partners |
@@ -97,6 +97,27 @@ Array snapshots do not let you edit the running simulation. Construct a new
 System to specify different coordinates; use `with_velocities` for different
 velocities. The explicit-array convenience
 `System.from_arrays(positions, velocities, box, ...)` is also available.
+
+## Change the box
+
+The box is the one thing in a state that can be changed directly:
+
+```python
+state = run.state
+state.box[0] *= 2          # twice as long along x
+state.box[:] = 20, 20, 20  # or set every length
+next_run = sim.run(state, steps=1000)
+```
+
+The atoms keep their positions; the next run starts from the new box. Across a
+periodic axis, atoms that are now outside the box are wrapped back in. A smaller
+box can therefore put atoms almost on top of each other, which makes the run blow
+up: shrink a dense system a little at a time, or let a barostat (`ensemble="npt"`)
+do it. Between walls, the wall at 0 stays and the far wall moves to the new
+length; every atom must still be inside, so squeeze atoms with a
+[piston](../walls.md) instead. `run.state` is the same state each time you read
+it, so `run.state.box[0] *= 2` is kept for `sim.run(run.state)`. `with_box`
+instead centres the contents in a larger periodic box.
 
 ### Reverse or perturb velocities
 
