@@ -402,3 +402,10 @@ sorted far to near, far atoms faded to the background; box edges split into behi
 image. Views, colours and radii follow the player (`_rotation` mirrors viewer.js:
 angled, across a slab's long axis, or face-on xz in orthographic). 13 500 atoms draw
 and save at 150 dpi in about 0.1 s. `tests/test_drawing.py`.
+Views for `draw`: `view="angled"|"front"|"side"|"top"` or `(elevation, azimuth)` in
+degrees (`VIEWS`, `_look`; matplotlib's convention, z up); without a view,
+orthographic gives "front" and a z-long box lies across. x/y/z arrows on a soft
+patch in the lower left (`_arrows`; a circle with a dot or cross for an axis along
+the line of sight); `arrows=False` omits them. `scripts/build_docs.py` makes
+`docs/images/draw_views.png` and `draw_systems.png` (gitignored) for the "Draw a
+picture" section of docs/api/system.md, so the docs build must run before mkdocs.

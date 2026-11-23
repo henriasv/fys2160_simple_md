@@ -32,6 +32,22 @@ class Draw(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'projection'):
             crystal.draw(projection='fisheye')
 
+    def test_views_and_the_arrows_that_show_them(self):
+        crystal = FCC(N=108, rho=.8)
+        L = crystal.box.lengths[0]
+        front = crystal.draw(view='front', projection='orthographic')
+        labels = sorted(text.get_text() for text in front.texts if text.get_text())
+        self.assertEqual(labels, ['x', 'y', 'z'])
+        for ax, limits in ((front, front.get_xlim()), (front, front.get_ylim())):
+            self.assertTrue(L <= np.ptp(limits) <= L+1.2)  # face-on: the box, and at most the atoms' overhang
+        top = crystal.draw(view='top', projection='orthographic')
+        self.assertTrue(L <= np.ptp(top.get_ylim()) <= L+1.2)
+        crystal.draw(view=(30, -30))
+        self.assertEqual(len(crystal.draw(arrows=False).texts), 0)
+        for bad in ('below', (1, 2, 3), 'xy'):
+            with self.assertRaisesRegex(ValueError, 'view'):
+                crystal.draw(view=bad)
+
     def test_a_flat_box_with_walls_has_axes_and_solid_walls(self):
         gas = Random(N=50, box=(30, 20), boundary=('walls', 'periodic'), min_distance=1.0, seed=1)
         ax = gas.draw()

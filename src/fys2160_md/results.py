@@ -141,11 +141,11 @@ class Run:
         """Simulation time of each saved frame."""
         return self._sampled('time')
 
-    def draw(self, frame=-1, ax=None, *, radius=None, projection='perspective'):
+    def draw(self, frame=-1, ax=None, *, view=None, projection='perspective', radius=None, arrows=True):
         """Draw one saved frame as balls in a matplotlib figure and return its Axes.
 
         ``frame`` indexes the saved frames (``run.steps``), the last by default.
-        Sizes and colours are those of ``run.view()``; see ``System.draw``.
+        Views, sizes and colours as in ``System.draw``.
         """
         from .drawing import draw_atoms, display_radii
         from .system import _walled
@@ -171,7 +171,7 @@ class Run:
         open_space = boundary == 'open'
         walled = (False,)*D if open_space else _walled(boundary if isinstance(boundary, str) else tuple(boundary), D)
         return draw_atoms(positions, box, species, radii, bonds=bonds, walled=walled, framed=not open_space,
-                          ax=ax, projection=projection)
+                          ax=ax, view=view, projection=projection, arrows=arrows)
 
     @property
     def measured(self) -> dict[str, np.ndarray]:

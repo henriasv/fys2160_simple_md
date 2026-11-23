@@ -365,22 +365,26 @@ class System:
         other._wall_sums=None if self._wall_sums is None else self._wall_sums.copy()
         return other
 
-    def draw(self, ax=None, *, radius=None, projection='perspective'):
+    def draw(self, ax=None, *, view=None, projection='perspective', radius=None, arrows=True):
         """Draw the atoms as balls in a matplotlib figure and return its Axes.
 
-        The view, colours and sizes are those of ``run.view()``: an angled view in
-        perspective, face-on to the xz plane in ``projection="orthographic"``, and
-        a flat system as it is. ``radius`` is a display radius (a number, or one
-        per species); by default 0.5 (sigma = 1), and the player's sizes for water.
-        Give ``ax`` to draw into a figure of your own; ``ax.figure.savefig(...)``
-        saves it.
+        ``view`` is where you look from, with z up: "angled" (the default),
+        "front" (the xz plane), "side" (the yz plane), "top" (the xy plane), or
+        (elevation, azimuth) in degrees as in matplotlib's 3D plots. Without a
+        view, ``projection="orthographic"`` gives "front", and a box much longer in
+        z (a slab) lies across the picture. Small x, y, z arrows show the directions
+        (``arrows=False`` leaves them out). A flat system is drawn as it is, with
+        axes. ``radius`` is a display radius (a number, or one per species); by
+        default 0.5 (sigma = 1), and the player's sizes for water. Give ``ax`` to
+        draw into a figure of your own; ``ax.figure.savefig(...)`` saves it.
         """
         from .drawing import draw_atoms, display_radii
         if radius is None and self.boundary == 'open':
             radius = .035
         return draw_atoms(self._x[:, :self._dim], self._box[:self._dim], self._species,
                           display_radii(self._species, self.model, radius), bonds=self.bonds,
-                          walled=tuple(self._walled), framed=self.boundary != 'open', ax=ax, projection=projection)
+                          walled=tuple(self._walled), framed=self.boundary != 'open', ax=ax, view=view,
+                          projection=projection, arrows=arrows)
 
     @classmethod
     def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):

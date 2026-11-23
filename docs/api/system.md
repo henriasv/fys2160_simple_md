@@ -106,19 +106,44 @@ ax = state.draw()                       # a matplotlib Axes; ax.figure is the fi
 ax.figure.savefig("crystal.png", dpi=200)
 
 fig, axes = plt.subplots(1, 2, figsize=(9, 4))
-first.state.draw(ax=axes[0])            # draw into figures of your own
-second.state.draw(ax=axes[1], projection="orthographic")
+first.state.draw(ax=axes[0])            # draw into a figure of your own
+second.state.draw(ax=axes[1], view="front", projection="orthographic")
 ```
 
 `draw` gives a still picture for reports and books: each atom is a shaded ball,
 drawn from the back to the front, with far atoms faded, the box edges and bonds.
-The view, colours and sizes are those of `run.view()`: an angled view in
-perspective (across the long axis of a slab), face-on to the xz plane with
-`projection="orthographic"`, and a flat system as it is, with axes, solid walls and
-dashed periodic sides. `radius` sets the display radius, a number or one per
-species; the default is 0.5 (sigma = 1), the player's sizes for water and 0.035 for
-an open cluster. Even 13 500 atoms draw and save in a fraction of a second.
-`run.draw(frame)` draws a saved frame of a run, with the run's own sizes.
+Colours and sizes are those of `run.view()`. `run.draw(frame)` draws a saved frame
+of a run (the last by default), with the run's own sizes. Even 13 500 atoms draw
+and save in a fraction of a second.
+
+### Which way you look
+
+`view` says where you look from. z is always up, as in matplotlib's 3D plots, and
+small arrows in the corner show which way x, y and z point. An axis along the line
+of sight is a circle: with a dot when it points towards you, a cross when it points
+away.
+
+| `view` | You look at | Right | Up |
+|---|---|---|---|
+| `"angled"` (the default) | the box from the front left, a little from above | | z |
+| `"front"` | the xz plane, along +y | x | z |
+| `"side"` | the yz plane, along −x | y | z |
+| `"top"` | the xy plane, down along −z | x | y |
+| `(elevation, azimuth)` | from that elevation above the xy plane and azimuth from the x axis, in degrees | | z |
+
+![The same crystal seen in six ways](../images/draw_views.png)
+
+`projection="perspective"` (the default) makes near atoms larger;
+`projection="orthographic"` keeps sizes equal, which suits face-on views of a
+lattice. Without a `view`, orthographic projection gives `"front"`, and a box much
+longer in z than across (a slab with vacuum) lies across the picture, as in the
+player. `arrows=False` leaves out the arrows. A flat system is drawn as it is,
+with x and y axes, solid walls and dashed periodic sides.
+
+![A flat box with walls, a mixture, and a water slab](../images/draw_systems.png)
+
+`radius` sets the display radius, a number or one per species; the default is 0.5
+(sigma = 1), the player's sizes for water and 0.035 for an open cluster.
 
 ## Change the box
 

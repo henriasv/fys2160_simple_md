@@ -44,6 +44,33 @@ def export(nb):
     """+formatter.get_style_defs(".code")
     return '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Recorded MD notebook</title><style>'+css+'</style></head><body><header>FYS2160 SIMPLE MD · EXECUTED NOTEBOOK · BROWSER PLAYBACK ONLY</header><main>'+"\n".join(cells)+"</main></body></html>"
 
+def draw_gallery():
+    """Pictures for the drawing section of the API page, made with the current code."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from fys2160_md import FCC, IceIh, Random, RigidWater
+    target=ROOT/"docs/images";target.mkdir(parents=True,exist_ok=True)
+    crystal=FCC(N=256, rho=0.8)
+    fig, axes=plt.subplots(2, 3, figsize=(12, 8))
+    views=[("crystal.draw()", {}), ('view="front", projection="orthographic"', dict(view="front", projection="orthographic")),
+           ('view="side"', dict(view="side")), ('view="top", projection="orthographic"', dict(view="top", projection="orthographic")),
+           ("view=(30, -30)", dict(view=(30, -30))), ("view=(10, 200)", dict(view=(10, 200)))]
+    for ax, (title, options) in zip(axes.flat, views):
+        crystal.draw(ax=ax, **options);ax.set_title(title, fontsize=10)
+    fig.tight_layout();fig.savefig(target/"draw_views.png", dpi=90);plt.close(fig)
+    ice=IceIh(N=768, density=0.92, molecule="water", bond=RigidWater(oh_length=1.0, hoh_angle=109.47), seed=1)
+    Lx, Ly, Lz=ice.box.lengths
+    fig, axes=plt.subplots(1, 3, figsize=(13, 4.2), gridspec_kw=dict(width_ratios=[1, 1, 1.6]))
+    Random(N=300, box=(40, 40), boundary="walls", min_distance=1.0, seed=1).draw(ax=axes[0])
+    axes[0].set_title("flat, with walls", fontsize=10)
+    Random(species={"A": 60, "B": 40}, rho=0.05, min_distance=1.0, seed=2).draw(ax=axes[1], radius={"A": 0.5, "B": 0.7})
+    axes[1].set_title('a mixture, radius={"A": 0.5, "B": 0.7}', fontsize=10)
+    ice.with_box([Lx, Ly, 4*Lz]).draw(ax=axes[2])
+    axes[2].set_title("a water slab: z lies across", fontsize=10)
+    fig.tight_layout();fig.savefig(target/"draw_systems.png", dpi=90);plt.close(fig)
+    print("Drawing gallery made.")
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("--execute",action="store_true");args=parser.parse_args()
     for name in ("quickstart", "isobar", "gravity", "water"):
@@ -60,5 +87,6 @@ def main():
         downloads=ROOT/"docs/downloads";downloads.mkdir(parents=True,exist_ok=True)
         shutil.copyfile(path,downloads/path.name)
         print(f"Static {name} notebook exported with embedded trajectories; no kernel required.")
+    draw_gallery()
 
 if __name__=="__main__":main()

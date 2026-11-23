@@ -19,30 +19,78 @@ def _colours(species):
     return PALETTE[[kind[name] for name in species]]
 
 
-def _rotation(box, projection):
-    """Rows: screen right, screen up, towards the viewer (the player's starting views)."""
-    if projection == 'orthographic':
-        # Face-on to the xz plane with z up, or with z across for a box long in z (a slab).
+# Named views: (elevation, azimuth) in degrees, as in matplotlib's 3D plots, with z up.
+VIEWS = {'angled': (20., -60.), 'front': (0., -90.), 'side': (0., 0.), 'top': (90., -90.)}
+
+
+def _look(elevation, azimuth):
+    """Rows: screen right, screen up, towards the viewer, for a camera at that
+    elevation above the xy plane and azimuth from the x axis, with z up."""
+    e, a = np.radians(elevation), np.radians(azimuth)
+    toward = np.array([np.cos(e)*np.cos(a), np.cos(e)*np.sin(a), np.sin(e)])
+    right = np.array([-np.sin(a), np.cos(a), 0.])
+    up = np.array([-np.sin(e)*np.cos(a), -np.sin(e)*np.sin(a), np.cos(e)])
+    return np.array([right, up, toward])
+
+
+def _rotation(box, view, projection):
+    """The view's rows: screen right, screen up, towards the viewer."""
+    if view is None:
         if box[2] == max(box) and box[2] > 1.5*min(box):
-            return np.array([[0., 0, 1], [1, 0, 0], [0, 1, 0]])
-        return np.array([[1., 0, 0], [0, 0, 1], [0, -1, 0]])
-    if max(box) > 1.5*min(box):
-        # A long box, such as a slab: look across its long axis, which then runs across the view.
-        toward = np.array([1, .35, 0]) if np.argmax(box) == 2 else np.array([0, .35, 1])
-        toward /= np.linalg.norm(toward)
-        right = np.array([toward[2], 0, -toward[0]])/np.hypot(toward[0], toward[2])
-        return np.array([right, np.cross(toward, right), toward])
-    cy, sy, cp, sp = np.cos(.35), np.sin(.35), np.cos(.3), np.sin(.3)
-    return np.array([[cy, 0, -sy], [-sy*sp, cp, -cy*sp], [sy*cp, sp, cy*cp]])
+            # A box long in z, such as a slab, lies across the picture as in the player:
+            # z to the right, y up, seen from x (a little from above in perspective).
+            if projection == 'orthographic':
+                return np.array([[0., 0, 1], [0, 1, 0], [-1, 0, 0]])
+            e = np.radians(20)
+            toward = np.array([-np.cos(e), np.sin(e), 0.])
+            return np.array([[0., 0, 1], np.cross(toward, [0., 0, 1]), toward])
+        view = 'front' if projection == 'orthographic' else 'angled'
+    if isinstance(view, str):
+        if view not in VIEWS:
+            raise ValueError(f'view must be one of {", ".join(VIEWS)}, or (elevation, azimuth) in degrees.')
+        return _look(*VIEWS[view])
+    try:
+        elevation, azimuth = (float(angle) for angle in view)
+    except (TypeError, ValueError):
+        raise ValueError('view must be a name or (elevation, azimuth) in degrees.') from None
+    return _look(elevation, azimuth)
+
+
+def _arrows(ax, R, background):
+    """Small x, y, z arrows near the lower left corner, foreshortened as the axes
+    are, on a soft patch of the background colour. An axis along the line of sight
+    is a circle: with a dot when it points towards the viewer, a cross away from it."""
+    from matplotlib.patches import Circle
+    from matplotlib.transforms import ScaledTranslation
+    figure = ax.figure
+    # Inches from the corner of the Axes, so the arrows keep their size in any figure.
+    at = figure.dpi_scale_trans+ScaledTranslation(0, 0, ax.transAxes)
+    centre, length = np.array([.42, .42]), .27
+    ax.add_patch(Circle(centre, .38, transform=at, facecolor=background, edgecolor='none', alpha=.8,
+                        zorder=5, clip_on=False))
+    for k, name in enumerate('xyz'):
+        v = R[:2, k]
+        size = np.hypot(*v)
+        if size < .2:
+            ax.plot(*centre, marker='o', ms=7, mfc='none', mec='0.3', mew=.9, transform=at, clip_on=False, zorder=6)
+            ax.plot(*centre, marker='.' if R[2, k] > 0 else 'x', ms=4 if R[2, k] > 0 else 3.5, color='0.3',
+                    mew=.9, transform=at, clip_on=False, zorder=6)
+            label = centre+[-.13, -.13]
+        else:
+            ax.annotate('', xy=centre+length*v, xycoords=at, xytext=centre, textcoords=at, zorder=6,
+                        arrowprops=dict(arrowstyle='-|>', color='0.3', lw=.9, shrinkA=0, shrinkB=0, mutation_scale=7))
+            label = centre+(length*size+.08)*v/size
+        ax.text(*label, name, transform=at, ha='center', va='center', fontsize=8, color='0.25', zorder=6)
 
 
 def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False, False), framed=True,
-               ax=None, projection='perspective', background='white'):
+               ax=None, view=None, projection='perspective', arrows=True, background='white'):
     """Draw atoms into ``ax`` (a new figure if None) and return the Axes.
 
     positions (N, D) and box (D,) are in the system's length unit; radii has one
     display radius per atom. ``walled`` marks the axes with walls; ``framed=False``
-    leaves out the box (an open cluster).
+    leaves out the box (an open cluster). ``view`` and ``projection`` as in
+    ``System.draw``; ``arrows`` adds x, y, z arrows to a 3D picture.
     """
     try:
         import matplotlib.pyplot as plt
@@ -75,7 +123,7 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
                         lw=2 if wall else .8, ls='-' if wall else (0, (4, 3)), zorder=1, solid_capstyle='projecting')
         order = np.arange(N)
     else:
-        R = _rotation(box, projection)
+        R = _rotation(box, view, projection)
         centre = box/2
         p = (positions-centre) @ R.T
         distance = 2.2*np.linalg.norm(box) if framed else 4*np.ptp(positions, axis=0).max()
@@ -129,6 +177,8 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
         ax.set_ylabel('y')
     else:
         ax.set_axis_off()
+        if arrows:
+            _arrows(ax, R, behind)
     return ax
 
 
