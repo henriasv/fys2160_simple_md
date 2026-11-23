@@ -1,2 +1,2 @@
 """Package version; raise it for every release so pip upgrades git installs."""
-__version__ = "0.4.0"
+__version__ = "0.5.0"

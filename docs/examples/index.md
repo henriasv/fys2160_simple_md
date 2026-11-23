@@ -338,3 +338,11 @@ The [executed isolated-cluster notebook](gravity.md) removes energy and compares
 settled measurements before and after. It includes pyplot figures, energy and
 virial checks, saved-data analysis and a particle replay. Gravity uses an open
 system and all-pairs forces, with no cutoff or periodic copies.
+
+## Elastic constants of a crystal
+
+The [elasticity notebook](elastic.md) strains a Lennard-Jones crystal by ±1% with
+`state.strain`, including shear in a tilted box, and reads C11, C12 and C44 from
+the pressure tensor. The moduli give sound speeds and a Debye temperature. The
+atoms' vibrational spectrum is compared with the Debye and Einstein models, and so
+is the heat capacity each implies.

@@ -410,7 +410,7 @@ the line of sight); `arrows=False` omits them. `scripts/build_docs.py` makes
 `docs/images/draw_views.png` and `draw_systems.png` (gitignored) for the "Draw a
 picture" section of docs/api/system.md, so the docs build must run before mkdocs.
 
-2026-11-23 (branch claude/triclinic): tilted boxes, strain, the pressure tensor, and
+2026-11-23 (0.5.0, branch claude/triclinic): tilted boxes, strain, the pressure tensor, and
 editable states.
 - Tilted (triclinic) boxes as in LAMMPS: `state.tilt` = (xy, xz, yz), edges a = (lx,0,0),
   b = (xy,ly,0), c = (xz,yz,lz); each tilt at most half the length it leans along;
@@ -446,3 +446,12 @@ editable states.
   total momentum is refused with the fix in the message. LiveRun getters stay
   read-only snapshots (so `before = live.positions` keeps its values) and take
   assignment for positions (unwrapped follow), velocities, masses, box and tilt.
+- `examples/elastic.ipynb` (built by build_docs.py, page docs/examples/elastic.md): LJ FCC,
+  N=500, NPT relax at P=0, T=0.1 (rho 1.059), then NVT strains of +-0.01 in xx and xy
+  (20 000 steps each) give C11 81.5, C12 47.8, C44 49.5 (reduced); VRH moduli -> v_l 9.8,
+  v_t 5.5, omega_D 24.4, theta_D 86 K in argon units (hbar* = 0.0296; argon ~92 K).
+  Einstein omega_E 14.1 (theta_E 50 K) from <u^2> of `run.unwrapped`. The velocity power
+  spectrum (4096 samples via `live.advance(2)`) is drawn against Debye omega^2 and the
+  Einstein line; C_V(T) from it lies between Einstein and Debye and drops below Debye
+  under a few K (finite box: no long waves). About 25 s to execute. Part C (alpha-quartz:
+  metal units, BKS, triclinic PPPM, anisotropic barostat) is planned, not started.
