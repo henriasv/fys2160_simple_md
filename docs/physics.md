@@ -183,7 +183,7 @@ python -m unittest discover -s tests
 node tests/test_viewer.cjs
 ```
 
-The 91 Python checks cover pair forces against analytical derivatives, periodic
+The 130 Python checks cover pair forces against analytical derivatives, periodic
 boundaries, neighbor lists against brute-force sums, timestep convergence, rigid
 constraints, thermodynamic sampling, energy addition, checkpoint restart, named
 storage, pacing invariance, and both geometry constructors. They also check that
@@ -193,6 +193,11 @@ neighbour list equals the all-pairs one. For flat systems, walls and pistons
 they check energy conservation, that each wall takes up exactly the momentum
 the gas loses to it, the force on a wall against N k T / L, and the piston's
 work against the change in energy; see [Flat boxes, walls and pistons](walls.md#validation).
+For tilted boxes they check forces and the pressure tensor against sums over
+periodic images and against strain derivatives of the energy, PPPM in a tilted box
+against a direct Ewald sum, and the anisotropic barostat's conserved quantity; the
+cross-checks against LAMMPS for tilted Lennard-Jones and BKS quartz crystals are in
+[Crystals and elasticity](crystals.md#validation).
 
 The viewer checks cover camera gestures, physical particle sizing, display scaling
 and cleanup. `python tests/preview_viewer.py /tmp/depth.html` writes a browser

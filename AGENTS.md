@@ -9,7 +9,8 @@ This repository contains the standalone course MD package. Python import:
   final state (clock, thermostat RNG, barostat rate, PPPM choice, heat added),
   so chained runs equal one long run. Run controls never carry over. Native solver: `_core.c`
   (LJ/diatomic/gravity, keep byte-identical) and `molecular.c` + `pppm.c` + `fft.c`
-  (charged atoms and rigid water, LAMMPS `real` units).
+  (charged atoms, Buckingham terms and rigid water, LAMMPS `real` and `metal` units;
+  tilted boxes and anisotropic pressure control for atoms). `tilt.h` is shared.
 - A run in memory: `live = sim.start(state, ...)` returns a `LiveRun` with
   `advance(steps)`, `observables`, `positions`, `velocities`, `box`, `step`, `time`,
   `set(temperature=...)`, `settings` and `state`. `run` is that loop with files.
@@ -455,3 +456,66 @@ editable states.
   Einstein line; C_V(T) from it lies between Einstein and Debye and drops below Debye
   under a few K (finite box: no long waves). About 25 s to execute. Part C (alpha-quartz:
   metal units, BKS, triclinic PPPM, anisotropic barostat) is planned, not started.
+
+2026-11-23 (0.6.0, branch claude/alpha-quartz): Part C, alpha-quartz. Public surface:
+`AlphaQuartz(cells=(4, 2, 3), a=4.9134, c=5.4052)` (metal units, species Si/O, a
+rectangular a x sqrt(3)a x c cell of 18 atoms, P3_2 21 positions of Levien et al. 1980,
+checked: 4 O per Si at 1.604/1.613 Å, Si-O-Si 143.7 deg, 2.6487 g/cm^3);
+`Buckingham(A, rho, C)` with `.energy(r)` and `.barrier` (inner maximum, 1.098 Å for
+BKS Si-O); `MDSimulation(pair_potential={("Si","O"): Buckingham(...), ...})` (pairs left
+out do not interact at short range; `sim.pair_potential == "buckingham"`, `sim.pairs`;
+config `pairs`); `units="metal"` (LAMMPS constants; defaults skin 2 Å, friction 5/ps,
+pressure_time 1 ps); `barostat="isotropic"|"anisotropic"` (constructor, run, start,
+set; settings now always contain `barostat`); `tail=True` (needs lj_shift=False, as
+LAMMPS refuses shift+tail) for the charged-atom solver, LJ and Buckingham. Observables
+for atoms in the charged-atom solver: `pxx..pyz` from every step's tensor,
+`buckingham_energy` (instead of lj_energy), `mass_density` in metal units.
+
+How it is built. `tilt.h` holds the tilted-box helpers (moved out of _core.c) for
+_core.c, molecular.c and pppm.c. molecular.c: Model.style/buckingham (types x types x 4:
+A, rho, C, barrier; the barrier check raises a message naming the atoms), Model.tilt
+(NULL when zero, so rectangular code paths are unchanged), `pair_shift` and
+`build_list` use tilted_image, drift and scale_molecules wrap into the parallelepiped
+(atoms only; tilt scales by row, F = diag(f): xy, xz with x, yz with y), face-distance
+checks, `Terms.tensor` (pair + Coulomb + k-space + tail, atoms only), result "tensor"
+= kinetic + virial tensor. Anisotropic MTK: `rates` (3,) buffer, inertia baromass/3
+per axis, so equal rates reproduce the isotropic barostat; conserved
+extended_enthalpy (checked in NPH). Tail: E V and W V precomputed from type counts,
+divided by the current volume each force call. Workspace: ws->tilt compared like the
+box; Buckingham tables and the style/tail flags are in the inputs (scalar slots 16, 17).
+pppm.c: `pppm_select(width, lengths, ...)` (widths = face distances choose the mesh;
+lengths keep the old volume arithmetic, which matters bitwise), `update_greens_tilted`
+(non-separable Gaussian over aliases of k = 2 pi H^-T w; recomputed when box or tilt
+change), charges spread in fractional coordinates, the field uses k with Nyquist
+components zeroed (equivalent to LAMMPS taking the real part), k-space virial tensor.
+The PPPM state stores widths as the reference for re-selection. Water NVT/NPT and
+salt trajectories are bitwise identical to main (checked against a main worktree).
+
+Validation: `scripts/validate_quartz.py PATH_TO_LMP` (serial LAMMPS with KSPACE built
+from hsp_hymcp/lammps with `make yes-kspace; make serial` in a scratch copy; Homebrew's
+segfaults in PPPM): 1080 atoms, all tilts, energy 4e-15, forces 1.6e-5 eV/Å, off-diagonal
+pressure < 0.1 bar, diagonal 3 bar, fully explained by LAMMPS's real-space Coulomb force
+using the exact erfc derivative with the approximate erfc (ours is the derivative of
+our energy; the predicted offsets 3.17/3.07/3.04 bar match). Buckingham alone: forces
+1e-12, pressure 1e-8 bar. The PPPM virial differs from the strain derivative by a few
+bar in both codes. Tests: tests/test_quartz.py (structure, terms, barrier, tail against
+numerical integrals for Buckingham and LJ, tilted PPPM vs a tilted direct Ewald sum
+(tests/ewald_reference.py takes tilt and tensor), tensor vs strain derivative, tilted
+chunks/chains, anisotropic relaxation, NPH conservation, rates through checkpoints).
+Speed: 432 atoms, cutoff 8, 1.6 ms/step at kspace_accuracy 1e-4 (3.0 at 1e-5).
+
+BKS at 300 K, 0 bar (tail on, cutoff 8, 432 atoms): a 4.935, c 5.442 Å, 2.608 g/cm^3.
+Without the tail the -C/r^6 beyond 8 Å (about -1.1 GPa) is missing and the density is
+2.53. Elastic constants (GPa, 10 ps per +-1% strain): C11 88.5, C12 7.6, C13 15.3,
+|C14| 16.8-17.1, C33 106.7, C44 49.1, C66 40.4, against Ogi et al. 2006 (J. Appl. Phys.
+100, 053511, Table I averages at 30 C): 86.76, 6.868, 11.85, -18.02, 105.46, 58.14,
+39.95. Our C14 is positive in this setting; its sign depends on handedness and axes.
+`examples/quartz.ipynb` (built by build_docs.py; generator kept out of the repo, edit
+the notebook): NPT anisotropic relax 20 ps (a 4.935, c 5.441 Å, 2.609 g/cm^3), eight
+NVT strains of 10 ps (C11 88.3, C12 7.4, C13 15.1, C14 16.9, C33 106.8, C44 49.1, C66 40.4
+GPa; symmetry partners agree to 0.2 GPa), VRH from the full 6x6 matrix: K 39.6, G 41.3
+GPa, v_l 6020, v_t 3976 m/s, theta_D 555 K (572 K from Ogi's constants). The
+mass-weighted velocity spectrum has bands at 15-18, 22-27, 33 and 37 THz; C_V/3Nk at
+300 K: spectrum 0.54, Debye 0.85, measured C_p 44.6 J/(mol K) -> 0.60. About 3 minutes.
+`state.draw()` and `run.draw()` use element display sizes (O 1.2, Si 0.9 Å) in metal
+units, as the player does.

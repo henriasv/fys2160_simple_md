@@ -24,6 +24,7 @@ nav:
   - Build a system: geometry.md
   - Water and electrostatics: water.md
   - Flat boxes, walls and pistons: walls.md
+  - Crystals and elasticity: crystals.md
 - Examples:
   - Recipes: examples/index.md
   - Executed notebook: examples/notebook.md
@@ -31,6 +32,7 @@ nav:
   - Gravity & negative heat capacity: examples/gravity.md
   - Liquid water models: examples/water.md
   - Elastic constants, Debye and Einstein: examples/elastic.md
+  - Quartz, sound and heat capacity: examples/quartz.md
 - API reference:
   - System & geometry: api/system.md
   - MDSimulation: api/simulation.md

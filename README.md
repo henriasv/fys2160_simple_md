@@ -61,14 +61,19 @@ steps at a time with `live.advance(10)`, reading `live.observables` and
 `live.positions` in between.
 Saved trajectories remain replayable after restarting Python. Reusing a
 `storage_name` overwrites that result. LJ systems use reduced units; water uses
-LAMMPS `real` units (Å, fs, kcal/mol, K, atm).
+LAMMPS `real` units (Å, fs, kcal/mol, K, atm) and crystals such as quartz LAMMPS
+`metal` units (Å, ps, eV, K, bar).
 
 The engine supports atomic LJ in three dimensions or two, in a periodic box or
 between walls that record the force on them, with a piston that records its
 work; flexible and rigid diatomics, rigid SPC/E and
 TIP4P-type water with PPPM long-range electrostatics, NVE/NVT and NPH/NPT for
-atoms and water, box expansion, plus controlled heating. It has no LAMMPS or
-Atomify runtime dependency. See [Water and electrostatics](https://henriasv.github.io/fys2160_simple_md/water/).
+atoms and water, box expansion, plus controlled heating. Tilted (triclinic) boxes,
+strain and the pressure tensor give elastic constants, for Lennard-Jones crystals and
+for ionic crystals with Buckingham terms and charges, such as alpha-quartz with BKS
+and an anisotropic barostat. It has no LAMMPS or Atomify runtime dependency. See
+[Water and electrostatics](https://henriasv.github.io/fys2160_simple_md/water/) and
+[Crystals and elasticity](https://henriasv.github.io/fys2160_simple_md/crystals/).
 See the [model details](https://henriasv.github.io/fys2160_simple_md/physics/) for
 assumptions, limits and validation. This is a teaching tool, not a general MD engine.
 
