@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import csv
 from functools import wraps
+import inspect
 import json
 import shutil
 import time
@@ -67,6 +68,36 @@ def _species_values(value, name, zero):
             raise ValueError(f'{name} mapping must not be empty.')
         return {k: _positive(v, name, zero=zero) for k, v in value.items()}
     return _positive(value, name, zero=zero)
+
+
+# What a measurement function may ask for, by the names of its parameters.
+MEASURE_ARGUMENTS = ('positions', 'velocities', 'unwrapped', 'box', 'boxes', 'steps', 'times')
+
+
+def _measurements(measure):
+    """Check ``measure={name: function}`` and find the arrays each function asks for."""
+    if measure is None:
+        return {}
+    if not isinstance(measure, dict):
+        raise TypeError('measure must be a dictionary of named functions, such as measure={"N_left": left_half}.')
+    checked = {}
+    for name, function in measure.items():
+        if not isinstance(name, str) or not name.strip() or name != name.strip():
+            raise ValueError(f'A measurement name must be a nonempty string without surrounding spaces, not {name!r}.')
+        if not callable(function):
+            raise TypeError(f'measure[{name!r}] must be a function.')
+        try:
+            parameters = inspect.signature(function).parameters
+        except (TypeError, ValueError):
+            raise TypeError(f'measure[{name!r}]: cannot read the names of its arguments.') from None
+        names = tuple(parameters)
+        unknown = [p for p in names if p not in MEASURE_ARGUMENTS] + [
+            p.name for p in parameters.values() if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+        if not names or unknown:
+            raise ValueError(f'measure[{name!r}]: its arguments must be named from {", ".join(MEASURE_ARGUMENTS)}'
+                             + (f'; {", ".join(unknown)} is not one of them.' if unknown else '.'))
+        checked[name] = (function, names)
+    return checked
 
 
 class MDSimulation:
@@ -213,7 +244,7 @@ class MDSimulation:
         return _Engine(self, state, settings, None if seed is None else _seed(seed))
 
     def start(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
-              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None):
+              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None, measure=None):
         """Start a run of a copy of ``state`` in memory, and return it as a LiveRun.
 
         Nothing is written to disk. ``live.advance(steps)`` takes steps;
@@ -224,15 +255,19 @@ class MDSimulation:
         sequence are treated as in ``run``, which is this loop with files:
         advancing in pieces gives the same trajectory as one call.
         ``piston=Piston("right", to=50, speed=0.05)`` moves a wall, as in ``run``.
+        ``measure={"N_left": left_half}`` evaluates functions of the atoms at every
+        step, as in ``run``; ``live.measured`` has one value per step.
         """
+        measure = _measurements(measure)
         return LiveRun(self._engine(state, timestep=timestep, ensemble=ensemble, temperature=temperature,
                                     pressure=pressure, heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff,
-                                    kspace_accuracy=kspace_accuracy, seed=seed, piston=piston))
+                                    kspace_accuracy=kspace_accuracy, seed=seed, piston=piston), measure)
 
     @_legacy_output_names
     def run(self, state, steps=1000, *, timestep=None, ensemble=None, temperature=None, pressure=None,
             heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None, piston=None,
-            thermo_every=100, trajectory_every=500, show=False, max_fps=None, frame_every=100, storage_name=None):
+            thermo_every=100, trajectory_every=500, show=False, max_fps=None, frame_every=100, storage_name=None,
+            measure=None):
         """Evolve a copy of ``state`` and save the run; the final state is ``run.state``.
 
         Controls given here apply to this run only; omitted ones take the values
@@ -262,6 +297,15 @@ class MDSimulation:
         ``piston=Piston("right", to=50, speed=0.05)`` moves that wall at constant
         speed to x = 50, where it stops; the box follows it, and ``work`` is the work
         the moving wall has done on the atoms.
+
+        ``measure={"N_left": left_half}`` adds a thermo column computed by your own
+        function at every step. The function names the arrays it needs, from
+        positions, velocities, unwrapped (each steps x atoms x dimensions), box
+        (the box lengths), boxes (one row per step), steps and times, and returns
+        one value per step: ``np.sum(positions[:, :, 0] < box[0]/2, axis=1)``. Each
+        thermo row has the mean since the previous row; ``run.measured`` has every
+        step. The same function works on the saved frames: ``left_half(run.positions,
+        run.boxes[0])``.
         """
         storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
         steps = _integer(steps, 'steps', 0)
@@ -275,7 +319,7 @@ class MDSimulation:
                 raise ValueError('max_fps is a live-view option; set show=True.')
         advancing = self.start(state, timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
                                heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed,
-                               piston=piston)
+                               piston=piston, measure=measure)
         engine = advancing._engine
         if deform is not None:
             deform = _positive(deform, 'deform')
@@ -302,7 +346,8 @@ class MDSimulation:
                     potential_shifted=self.pair_potential != 'gravity' and self.lj_shift, pressure_estimator=('not defined for an unconfined cluster' if self.pair_potential == 'gravity' else 'atomic virial' if engine.model == 'atomic' else 'molecular COM virial'),
                     start_step=start, start_time=engine.time, requested_steps=steps,
                     thermo_every=thermo_every, trajectory_every=trajectory_every,
-                    live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None)
+                    live_view=bool(show), max_fps=max_fps, frame_every=frame_every if show else None,
+                    measure=list(advancing._measure))
         write_json(path/'metadata.json', meta)
         started = time.monotonic()
         frame_index = 0
@@ -320,9 +365,11 @@ class MDSimulation:
             if live:
                 live.start(engine, steps)
             with (path/'thermo.csv').open('w', newline='') as stream:
-                writer = csv.DictWriter(stream, fieldnames=list(engine.observables))
+                row = advancing._row()
+                fieldnames = list(row)
+                writer = csv.DictWriter(stream, fieldnames=fieldnames)
                 writer.writeheader()
-                writer.writerow(engine.observables)
+                writer.writerow(row)
                 last_sample = engine.step
                 if trajectory_every is not None:
                     frame()
@@ -337,7 +384,7 @@ class MDSimulation:
                     elapsed = engine.step-start
                     final = elapsed == steps or interrupted
                     if elapsed%thermo_every == 0 or final:
-                        writer.writerow(engine.observables)
+                        writer.writerow(advancing._row())
                         stream.flush()
                         last_sample = engine.step
                     if trajectory_every is not None and (elapsed%trajectory_every == 0 or final):
@@ -360,7 +407,10 @@ class MDSimulation:
             if status != 'failed':
                 if last_sample != engine.step:
                     with (path/'thermo.csv').open('a', newline='') as stream:
-                        csv.DictWriter(stream, fieldnames=list(engine.observables)).writerow(engine.observables)
+                        row = advancing._row()
+                        csv.DictWriter(stream, fieldnames=list(row)).writerow(row)
+                if advancing._measure:
+                    np.savez(path/'measure.npz', steps=advancing.measured_steps, **advancing.measured)
                 if trajectory_every is not None and last_frame != engine.step:
                     frame()
                 engine._save_checkpoint(path)
@@ -389,18 +439,101 @@ class LiveRun:
     between calls does not change the trajectory.
     """
 
-    def __init__(self, engine):
+    def __init__(self, engine, measure=None):
         self._engine = engine
         self._failed = False
+        self._measure = measure or {}
+        clash = [name for name in self._measure if name in engine.observables or name == 'steps']
+        if clash:
+            raise ValueError(f'The measurement name {clash[0]!r} is taken; choose another name.')
+        self._wanted = {argument for _, arguments in self._measure.values() for argument in arguments}
+        self._series = {name: [] for name in self._measure}
+        self._series_steps = []
+        self._pending = {}
+        if self._measure:
+            self._record(self._now_arrays())
 
     def _advance(self, steps):
         """Take steps; True if a keyboard interrupt stopped them early."""
         self._check()
         try:
-            return self._engine._advance(steps)
+            if not self._measure:
+                return self._engine._advance(steps)
+            return self._advance_measuring(steps)
         except BaseException:
             self._failed = True
             raise
+
+    def _advance_measuring(self, steps):
+        """Advance in blocks; the solver copies every step for the measurements."""
+        engine = self._engine
+        n, D = len(engine._x), engine.dimension
+        # Each recorded array stays below about 16 MB.
+        block = max(1, min(256, int(16e6//(24*n))))
+        while steps > 0:
+            take = min(steps, block)
+            record = tuple(np.empty((take, n, 3)) if name in self._wanted else None
+                           for name in ('positions', 'velocities', 'unwrapped')) + (
+                           np.empty((take, 3)) if 'boxes' in self._wanted else None,)
+            box, step, time, dt = engine._box[:D].copy(), engine.step, engine.time, engine.settings['timestep']
+            interrupted = engine._advance(take, record=record)
+            done = engine.step-step
+            if done:
+                counted = np.arange(1, done+1)
+                arrays = dict(box=box, steps=step+counted, times=time+dt*counted)
+                for name, array in zip(('positions', 'velocities', 'unwrapped'), record):
+                    if array is not None:
+                        arrays[name] = array[:done, :, :D]
+                if record[3] is not None:
+                    # Gravity has no box to record: it stays the viewing frame.
+                    arrays['boxes'] = np.repeat(box[None], done, axis=0) if engine.pair_potential == 'gravity' else record[3][:done, :D]
+                self._record(arrays)
+            steps -= done
+            if interrupted:
+                return True
+        return False
+
+    def _now_arrays(self):
+        """The current state as a block of one step."""
+        engine = self._engine
+        D = engine.dimension
+        box = engine._box[:D].copy()
+        return dict(positions=engine._x[None, :, :D].copy(), velocities=engine._v[None, :, :D].copy(),
+                    unwrapped=engine._u[None, :, :D].copy(), box=box, boxes=box[None].copy(),
+                    steps=np.array([engine.step]), times=np.array([engine.time]))
+
+    def _evaluate(self, arrays):
+        """Each measurement for the steps of a block, checked: one finite value per step."""
+        count = len(arrays['steps'])
+        values = {}
+        for name, (function, arguments) in self._measure.items():
+            value = np.asarray(function(**{argument: arrays[argument] for argument in arguments}), dtype=float)
+            if value.shape != (count,):
+                hint = (' It gave a single number: sum or average over the atoms only, for example with axis=1.'
+                        if value.ndim == 0 else '')
+                raise ValueError(f'The measurement {name!r} must give one value per step, an array of length {count}; '
+                                 f'it gave shape {value.shape}.{hint}')
+            if not np.isfinite(value).all():
+                step = int(arrays['steps'][np.argmin(np.isfinite(value))])
+                raise ValueError(f'The measurement {name!r} is not finite at step {step}.')
+            values[name] = value
+        return values
+
+    def _record(self, arrays):
+        values = self._evaluate(arrays)
+        self._series_steps.append(arrays['steps'])
+        for name, value in values.items():
+            self._series[name].append(value)
+            total, count = self._pending.get(name, (0., 0))
+            self._pending[name] = (total+float(value.sum()), count+len(value))
+
+    def _row(self):
+        """A thermo row: the observables, and each measurement's mean since the previous row."""
+        row = dict(self._engine.observables)
+        for name, (total, count) in self._pending.items():
+            row[name] = total/count
+        self._pending = {}
+        return row
 
     def _check(self):
         if self._failed:
@@ -455,7 +588,21 @@ class LiveRun:
         piston, ``piston_position``. The mean force on a wall between two
         readings is the difference in impulse over the difference in time.
         """
-        return self._engine.observables
+        values = dict(self._engine.observables)
+        if self._measure:
+            values.update({name: float(value[0]) for name, value in self._evaluate(self._now_arrays()).items()})
+        return values
+
+    @property
+    def measured(self):
+        """The measurements given to ``measure``, one value per step from the start,
+        as a dict of arrays; ``measured_steps`` has the step numbers."""
+        return {name: np.concatenate(parts) for name, parts in self._series.items()}
+
+    @property
+    def measured_steps(self):
+        """The step numbers of the values in ``measured``."""
+        return np.concatenate(self._series_steps) if self._series_steps else np.empty(0, dtype=int)
 
     @property
     def positions(self):
@@ -697,13 +844,15 @@ class _Engine:
         self._v[::2] -= correction/self._mass[::2, None]
         self._v[1::2] += correction/self._mass[1::2, None]
 
-    def _advance(self, steps, measure=False):
+    def _advance(self, steps, measure=False, record=None):
+        """Take steps in the solver. ``record`` is None or arrays (positions, velocities,
+        unwrapped, box), each None or with a row for every step, which the solver fills."""
         c = self.settings
         sim = self.sim
         if sim.pair_potential == 'gravity':
             self._potential, self._virial, done, interrupted = _core.advance_gravity(
                 self._x, self._v, self._f, self._mass, steps, c['timestep'],
-                sim.G, sim.softening, c['heat_rate'], self._workspace)
+                sim.G, sim.softening, c['heat_rate'], self._workspace, record)
             self._u[:] = self._x
             self.step += done
             self.time += done*c['timestep']
@@ -711,7 +860,7 @@ class _Engine:
             self._pressure_numerator = float('nan')
             return bool(interrupted)
         if self.kind == 'molecular':
-            return self._advance_molecular(steps)
+            return self._advance_molecular(steps, record)
         # The pressure of molecules costs a pass over the pairs, so it waits until it is read.
         measure = measure or self.model == 'atomic'
         result = _core.advance(self._x, self._v, self._u, self._f, self._box,
@@ -720,7 +869,7 @@ class _Engine:
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
             int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace, int(measure),
-            self.dimension, self._external, self._wall_sums)
+            self.dimension, self._external, self._wall_sums, record)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, numerator = result
         self._pressure_numerator = numerator if measure else None
         self.step += done
@@ -728,7 +877,7 @@ class _Engine:
         self.heat_added += done*c['timestep']*c['heat_rate']
         return bool(interrupted)
 
-    def _advance_molecular(self, steps):
+    def _advance_molecular(self, steps, record=None):
         c = self.settings
         U = self._units
         controlled = c['ensemble'] in ('nph', 'npt')
@@ -745,7 +894,7 @@ class _Engine:
             barostat_mass=self._baromass, rate=self._rate, mvv2e=U.mvv2e, qqr2e=U.qqr2e,
             molecule_size=3 if self.model == 'water-rigid' else 1, constraints=self._constraints,
             alpha=self._alpha, lj_shift=self.sim.lj_shift, coulomb=int(self._charge is not None),
-            accuracy=c.get('kspace_accuracy', 1e-5), order=5, workspace=self._workspace)
+            accuracy=c.get('kspace_accuracy', 1e-5), order=5, workspace=self._workspace, record=record)
         self._terms = result
         self._potential = result['lj'] + result['coulomb'] + result['kspace']
         self._virial = result['virial']

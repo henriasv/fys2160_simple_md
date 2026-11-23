@@ -373,3 +373,21 @@ atoms and blows the run up (T* ~ 1e38 in a test; the solver does not stop it).
 `Run.state` is cached on the Run object. `tests/test_box_edit.py`. Not released:
 `_version.py` is unchanged. The dev `.venv` extension had to be rebuilt in place
 (`python setup.py build_ext --inplace`) after the merged solver changes.
+
+2026-11-23 (0.4.0, branch claude/measure-and-sampled-arrays): sampled arrays and
+per-step measurements. `run.positions`, `.velocities`, `.unwrapped` (saved steps,
+atoms, D), `.boxes`, `.steps`, `.times` stack the saved frames on first use and are
+cached read-only (refuses above 2 GB, pointing to `iter_frames`). `measure={name:
+function}` on `run` and `start`: the function names what it needs from
+positions, velocities, unwrapped, box, boxes, steps, times (`MEASURE_ARGUMENTS`,
+found with inspect.signature) and returns one value per step. The solvers take an
+optional `record` tuple (`record.h`: positions, velocities, unwrapped (steps,N,3),
+box (steps,3)) and copy each step into it; `LiveRun._advance_measuring` advances in
+blocks of at most 256 steps (each record array below 16 MB) and evaluates every
+function once per block. Thermo rows get the mean since the previous row
+(`LiveRun._row`), `measure.npz` the full series (`run.measured`,
+`run.measured_steps`); the first value is the starting state. Recording does not
+change trajectories (test). Cost: 200 flat atoms at thermo_every=10, 114k -> 103k
+steps/s with N_left. The same function applied to run.positions gives the in-run
+values at the saved steps; the docs present the post-processing way first. The
+Pyodide smoke test has a measurement, but was not run here (no wasm build).

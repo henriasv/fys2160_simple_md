@@ -10,6 +10,11 @@ if TYPE_CHECKING:  # pandas is loaded only when Run.thermo is read.
     import pandas as pd
 
 
+def _readonly(array):
+    array.flags.writeable = False
+    return array
+
+
 def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
@@ -91,6 +96,66 @@ class Run:
         if not frames:
             raise ValueError('This run contains no saved trajectory frames.')
         return {key: np.stack([frame[key] for frame in frames]) for key in frames[0]}
+
+    def _sampled(self, key):
+        """One stacked frame array, loaded with the others on first use and kept."""
+        if getattr(self, '_frames', None) is None:
+            paths = sorted((self.path / 'frames').glob('*.npz'))
+            if not paths:
+                raise ValueError('This run saved no frames: run it with trajectory_every set.')
+            with np.load(paths[0], allow_pickle=False) as first:
+                size = len(paths) * sum(first[k].nbytes for k in first.files)
+            if size > 2e9:
+                raise MemoryError(f'The saved frames would take {size/1e9:.1f} GB in memory. Read them one at '
+                                  'a time with iter_frames(), or save fewer (a larger trajectory_every).')
+            self._frames = {key: _readonly(value) for key, value in self.load_frames().items()}
+        return self._frames[key]
+
+    @property
+    def positions(self) -> np.ndarray:
+        """Saved positions, one row per saved step: (saved steps, atoms, dimensions)."""
+        return self._sampled('positions')
+
+    @property
+    def velocities(self) -> np.ndarray:
+        """Saved velocities: (saved steps, atoms, dimensions)."""
+        return self._sampled('velocities')
+
+    @property
+    def unwrapped(self) -> np.ndarray:
+        """Saved positions not wrapped into the box, for displacements: (saved steps, atoms, dimensions)."""
+        return self._sampled('unwrapped')
+
+    @property
+    def boxes(self) -> np.ndarray:
+        """Box lengths at each saved step: (saved steps, dimensions)."""
+        return self._sampled('box')
+
+    @property
+    def steps(self) -> np.ndarray:
+        """Step number of each saved frame."""
+        return self._sampled('step')
+
+    @property
+    def times(self) -> np.ndarray:
+        """Simulation time of each saved frame."""
+        return self._sampled('time')
+
+    @property
+    def measured(self) -> dict[str, np.ndarray]:
+        """The run's measurements (``measure=``), one value per step from the start; empty without them."""
+        if not (self.path / 'measure.npz').exists():
+            return {}
+        with np.load(self.path / 'measure.npz', allow_pickle=False) as data:
+            return {key: data[key].copy() for key in data.files if key != 'steps'}
+
+    @property
+    def measured_steps(self) -> np.ndarray:
+        """Step numbers of the values in ``measured``."""
+        if not (self.path / 'measure.npz').exists():
+            return np.empty(0, dtype=int)
+        with np.load(self.path / 'measure.npz', allow_pickle=False) as data:
+            return data['steps'].copy()
 
     def plot(self, *quantities, x='time'):
         """Plot one quantity per panel, with no twin axes."""

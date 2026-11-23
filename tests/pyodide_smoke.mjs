@@ -37,6 +37,14 @@ drift = float(abs(energy[-1]-energy[0])/abs(energy[0]))
 assert table['step'].tolist() == [0, 50, 100, 150, 200]
 assert drift < 1e-3, drift
 assert run.state.step == 200 and run.load_frames()['positions'].shape == (3, 108, 3)
+assert run.positions.shape == (3, 108, 3) and run.steps.tolist() == [0, 100, 200]
+# A measurement at every step, the same function as on the saved frames.
+def left_half(positions, box):
+    return np.sum(positions[:, :, 0] < box[0]/2, axis=1)
+measured = sim.run(system, steps=100, thermo_every=50, trajectory_every=50, storage_name='measured',
+                   measure={'N_left': left_half})
+assert measured.measured['N_left'].shape == (101,)
+assert measured.measured['N_left'][::50].tolist() == left_half(measured.positions, measured.boxes[0]).tolist()
 try:
     run.thermo
 except ImportError as exc:

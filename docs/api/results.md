@@ -14,6 +14,9 @@ Loading a run reads files and does **not** start a simulation.
 | `run.path` | Resolved directory path |
 | `run.metadata` | Configuration, units, completion status and output settings |
 | `run.thermo` | Pandas DataFrame read from thermo.csv |
+| `run.positions`, `run.velocities`, `run.unwrapped` | Saved frames as arrays (saved steps, atoms, dimensions) ([below](#sampled-arrays)) |
+| `run.boxes`, `run.steps`, `run.times` | Box lengths, step numbers and times of the saved frames |
+| `run.measured`, `run.measured_steps` | Your own measurements (`measure=`), one value per step |
 | `run.iter_frames()` | Stream saved frame dictionaries one at a time |
 | `run.load_frames()` | Stack all frames in memory; raises if none were saved |
 | `run.view(...)` | Self-contained HTML trajectory player for notebook output |
@@ -55,6 +58,7 @@ runs/gas/
   metadata.json
   thermo.csv
   checkpoint.npz
+  measure.npz         (only with measure=)
   frames/0000000.npz
   frames/0000001.npz
   ...
@@ -67,6 +71,20 @@ with shape (frames, atoms, 3). A final checkpoint is kept even when
 
 ```python
 continued = sim.run(saved.state, steps=1000, storage_name="continued")
+```
+
+## Sampled arrays
+
+`run.positions` has every saved frame: shape (saved steps, atoms, dimensions),
+with `run.steps` and `run.times` saying when each was saved (every
+`trajectory_every` steps, plus the start and the end). The arrays are read the
+first time you use one and kept; a run whose frames would not fit in 2 GB refuses
+and points to `iter_frames()`. The same functions can be computed during a run
+with `measure=` ([your own measurements](simulation.md#your-own-measurements)).
+
+```python
+x = result.positions[:, :, 0]               # x of every atom in every saved frame
+n_left = np.sum(x < result.boxes[:, None, 0]/2, axis=1)
 ```
 
 A `Run` refers to a directory, not an immutable copy. Replacing that storage name
