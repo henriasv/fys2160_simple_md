@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include "pppm.h"
+#include "record.h"
 
 static double uniform01(uint64_t *state) {
     uint64_t x = *state;
@@ -515,21 +516,23 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     static char *keywords[] = {"x", "v", "u", "f", "box", "mass", "types", "charges", "epsilon", "sigma", "pppm_state", "deform",
         "steps", "timestep", "cutoff", "coulomb_cutoff", "skin", "temperature", "friction", "seed", "heat_rate", "pressure",
         "barostat_mass", "rate", "mvv2e", "qqr2e", "molecule_size", "constraints", "alpha", "lj_shift", "coulomb",
-        "accuracy", "order", "workspace", NULL};
+        "accuracy", "order", "workspace", "record", NULL};
     enum { X, V, U, F, BOX, MASS, TYPES, CHARGES, EPSILON, SIGMA, STATE, BUFFERS };
-    PyObject *objects[BUFFERS], *deform_object, *workspace_object = NULL, *result = NULL;
+    PyObject *objects[BUFFERS], *deform_object, *workspace_object = NULL, *record_object = NULL, *result = NULL;
+    Record rec;
+    memset(&rec, 0, sizeof rec);
     Py_buffer view[BUFFERS + 1];
     memset(view, 0, sizeof view);
     int requested, size, lj_shift, coulomb, order, done = 0, interrupted = 0;
     double dt, cutoff, coulomb_cutoff, skin, T, gamma, heat, targetP, baromass, rate, mvv2e, qqr2e, alpha, accuracy;
     double constraint[3];
     unsigned long long seed;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOOOOOOOOOiddddddKddddddi(ddd)dpidi|O", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOOOOOOOOOiddddddKddddddi(ddd)dpidi|OO", keywords,
             &objects[X], &objects[V], &objects[U], &objects[F], &objects[BOX], &objects[MASS], &objects[TYPES],
             &objects[CHARGES], &objects[EPSILON], &objects[SIGMA], &objects[STATE], &deform_object,
             &requested, &dt, &cutoff, &coulomb_cutoff, &skin, &T, &gamma, &seed, &heat, &targetP,
             &baromass, &rate, &mvv2e, &qqr2e, &size, &constraint[0], &constraint[1], &constraint[2],
-            &alpha, &lj_shift, &coulomb, &accuracy, &order, &workspace_object)) return NULL;
+            &alpha, &lj_shift, &coulomb, &accuracy, &order, &workspace_object, &record_object)) return NULL;
     Model m = {0};
     /* None or absent gives a workspace for this call only. */
     MolecularWorkspace local, *ws = &local;
@@ -545,6 +548,7 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     int n = (int)view[X].shape[0];
     Py_ssize_t atoms[1] = {n};
     for (int k = V; k <= F; ++k) if (view[k].shape[0] != n) { PyErr_SetString(PyExc_ValueError, "State shapes must agree."); goto cleanup; }
+    if (record_open(&rec, record_object, n, requested) < 0) goto cleanup;
     if (get_buffer(objects[BOX], &view[BOX], 1, sizeof(double), "d", 1, vector3, "box") < 0 ||
         get_buffer(objects[MASS], &view[MASS], 0, sizeof(double), "d", 1, atoms, "mass") < 0 ||
         get_buffer(objects[TYPES], &view[TYPES], 0, sizeof(int), "i", 1, atoms, "types") < 0 ||
@@ -687,6 +691,7 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
             for (int k = 0; k < 3*n; ++k) v[k] *= factor;
         }
         ++done;
+        record_step(&rec, done - 1, n, x, v, u, box);
         if ((done % 16 == 0 || done == requested) && PyErr_CheckSignals() < 0) {
             if (!PyErr_ExceptionMatches(PyExc_KeyboardInterrupt)) goto cleanup;
             PyErr_Clear(); interrupted = 1; break;
@@ -709,6 +714,7 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         ws->terms = terms; ws->current = 1;
     }
 cleanup:
+    record_close(&rec);
     for (int k = 0; k <= BUFFERS; ++k) if (view[k].obj) PyBuffer_Release(&view[k]);
     free(m.shift);
     release_workspace(&local);

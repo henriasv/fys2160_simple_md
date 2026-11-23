@@ -15,8 +15,10 @@ This repository contains the standalone course MD package. Python import:
   `set(temperature=...)`, `settings` and `state`. `run` is that loop with files.
   New observables and controls (walls, pistons, external potentials) belong in
   `observables` and as keywords of `start`/`set`, not in new methods.
-- `state.with_velocities(v)` and `state.with_box(box)` return changed copies;
-  states are never edited in place.
+- `state.with_velocities(v)` and `state.with_box(box)` return changed copies.
+  The box is the one editable part of a state (`state.box[0] *= 2`, for students);
+  runs never change the state they are given, and `Run.state` is cached per Run so
+  that an edit of `run.state` reaches the next run.
 - Two dimensions and walls (atoms in reduced units only): a box with two lengths
   is flat; `boundary="walls"` or one word per axis. The solver always works on
   (N,3) arrays; a flat system has z = 0 and box[2] = 0 inside `System`/`_Engine`
@@ -361,3 +363,49 @@ averages agree. 91 Python tests and the viewer checks pass; the Pyodide smoke te
 also runs a piston. Thermostat noise is one sequence per `seed`: runs that should be
 independent need different seeds (`sim.start(state, seed=...)`), not only different
 starting positions.
+
+2026-11-23: `state.box` is the state's own length array (an ndarray subclass `Box`
+with `.lengths` and `.volume`), so `state.box[0] *= 2` changes the box the next run
+starts with. Positions are kept; the next run copies the state through the `System`
+constructor, which wraps periodic axes and refuses atoms more than 1 beyond a wall
+(the message points to `Piston`). A sudden squeeze of a dense periodic box overlaps
+atoms and blows the run up (T* ~ 1e38 in a test; the solver does not stop it).
+`Run.state` is cached on the Run object. `tests/test_box_edit.py`. Not released:
+`_version.py` is unchanged. The dev `.venv` extension had to be rebuilt in place
+(`python setup.py build_ext --inplace`) after the merged solver changes.
+
+2026-11-23 (0.4.0, branch claude/measure-and-sampled-arrays): sampled arrays and
+per-step measurements. `run.positions`, `.velocities`, `.unwrapped` (saved steps,
+atoms, D), `.boxes`, `.steps`, `.times` stack the saved frames on first use and are
+cached read-only (refuses above 2 GB, pointing to `iter_frames`). `measure={name:
+function}` on `run` and `start`: the function takes one argument, the result,
+and returns one value per step. During the run that argument is a `Frames` block
+(simulation.py) with the attributes of a saved run's frames (positions,
+velocities, unwrapped, boxes, steps, times; read-only), so `left_half(run)` on a
+saved run and `measure={"N_left": left_half}` share one function. The solvers take an
+optional `record` tuple (`record.h`: positions, velocities, unwrapped (steps,N,3),
+box (steps,3)) and copy each step into it; `LiveRun._advance_measuring` advances in
+blocks of at most 256 steps (each record array below 16 MB) and evaluates every
+function once per block. Thermo rows get the mean since the previous row
+(`LiveRun._row`), `measure.npz` the full series (`run.measured`,
+`run.measured_steps`); the first value is the starting state. Recording does not
+change trajectories (test). All four arrays are always recorded. Cost: 200 flat atoms, 113k -> 97k steps/s at
+thermo_every=10 and 141k -> 133k at 100, with N_left. The same function applied to run.positions gives the in-run
+values at the saved steps; the docs present the post-processing way first. The
+Pyodide smoke test has a measurement, but was not run here (no wasm build).
+
+2026-11-23 (0.4.0, same branch): still pictures. `state.draw()` and `run.draw(frame=-1)`
+(`drawing.py`, matplotlib imported on use) return a matplotlib Axes: per atom a rim,
+body and highlight ellipse in one EllipseCollection (units "xy"), interleaved and
+sorted far to near, far atoms faded to the background; box edges split into behind
+(under the atoms) and in front; bonds as lines with molecules made whole by minimum
+image. Views, colours and radii follow the player (`_rotation` mirrors viewer.js:
+angled, across a slab's long axis, or face-on xz in orthographic). 13 500 atoms draw
+and save at 150 dpi in about 0.1 s. `tests/test_drawing.py`.
+Views for `draw`: `view="angled"|"front"|"side"|"top"` or `(elevation, azimuth)` in
+degrees (`VIEWS`, `_look`; matplotlib's convention, z up); without a view,
+orthographic gives "front" and a z-long box lies across. x/y/z arrows on a soft
+patch in the lower left (`_arrows`; a circle with a dot or cross for an axis along
+the line of sight); `arrows=False` omits them. `scripts/build_docs.py` makes
+`docs/images/draw_views.png` and `draw_systems.png` (gitignored) for the "Draw a
+picture" section of docs/api/system.md, so the docs build must run before mkdocs.

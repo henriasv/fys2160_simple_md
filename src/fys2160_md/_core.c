@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "molecular.h"
+#include "record.h"
 
 typedef struct { int i, j; } Pair;
 /* Pairs within the list radius, ordered by i and then j whichever way they were
@@ -512,9 +513,11 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     double *sums=NULL, wall[EXTERNAL_MAX]={0}, before[EXTERNAL_MAX]={0}, moved[EXTERNAL_MAX]={0};
     double length=.7, k2=35., k3=-40., k4=59., epsilon=1., sigma=1.;
     unsigned long long seed;
-    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOiiOO", &objects[0], &objects[1],
+    PyObject *record_object=NULL;
+    Record rec; memset(&rec,0,sizeof rec);
+    if (!PyArg_ParseTuple(args, "OOOOOOidddddKidddd|iiddddddOOOiiOOO", &objects[0], &objects[1],
         &objects[2], &objects[3], &objects[4], &objects[5], &requested,
-        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure, &dimension, &external_object, &sums_object)) return NULL;
+        &dt, &cutoff, &skin, &T, &gamma, &seed, &model, &heat, &targetP, &baromass, &rate, &pair, &exclude, &length, &k2, &k3, &k4, &epsilon, &sigma, &parameter_object, &bond_object, &workspace_object, &measure, &dimension, &external_object, &sums_object, &record_object)) return NULL;
     if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     if(pair==-1)pair=(model!=0);
     for (int k=0; k<6; ++k) {
@@ -532,6 +535,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
         goto cleanup;
     }
     int n = (int)buffers[0].shape[0];
+    if(record_open(&rec,record_object,n,requested)<0)goto cleanup;
     if(parameter_object){
         if(PyObject_GetBuffer(parameter_object,&parameter_buffer,PyBUF_C_CONTIGUOUS|PyBUF_FORMAT)<0)goto cleanup;
         if(parameter_buffer.ndim!=2 || parameter_buffer.shape[0]!=n || parameter_buffer.shape[1]!=2 ||
@@ -718,6 +722,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k)v[k]*=factor;
         }
         ++done;
+        record_step(&rec,done-1,n,x,v,u,box);
         if ((done%64==0 || done==requested) && PyErr_CheckSignals()<0) {
             if(!PyErr_ExceptionMatches(PyExc_KeyboardInterrupt))goto cleanup;
             PyErr_Clear(); interrupted=1; break;
@@ -738,6 +743,7 @@ static PyObject *advance(PyObject *self, PyObject *args) {
     }
 
 cleanup:
+    record_close(&rec);
     if(sums_buffer.obj)PyBuffer_Release(&sums_buffer);
     if(external_buffer.obj)PyBuffer_Release(&external_buffer);
     if(bond_buffer.obj)PyBuffer_Release(&bond_buffer);
@@ -772,13 +778,14 @@ static int gravity_forces(int n, const double *x, const double *mass,
 
 static PyObject *advance_gravity(PyObject *self, PyObject *args) {
     (void)self;
-    PyObject *objects[4], *result=NULL, *workspace_object=NULL;
+    PyObject *objects[4], *result=NULL, *workspace_object=NULL, *record_object=NULL;
     Py_buffer b[4]={{0}};
+    Record rec; memset(&rec,0,sizeof rec);
     Workspace local={0}, *ws;
     int requested,done=0,interrupted=0;
     double dt,G,a,heat,U,W;
-    if(!PyArg_ParseTuple(args,"OOOOidddd|O",&objects[0],&objects[1],&objects[2],&objects[3],
-                         &requested,&dt,&G,&a,&heat,&workspace_object))return NULL;
+    if(!PyArg_ParseTuple(args,"OOOOidddd|OO",&objects[0],&objects[1],&objects[2],&objects[3],
+                         &requested,&dt,&G,&a,&heat,&workspace_object,&record_object))return NULL;
     if(!(ws=borrowed_workspace(workspace_object,&local)))return NULL;
     for(int k=0;k<4;++k){
         if(PyObject_GetBuffer(objects[k],&b[k],PyBUF_C_CONTIGUOUS|PyBUF_FORMAT|(k<3?PyBUF_WRITABLE:0))<0)goto cleanup;
@@ -794,6 +801,7 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
         PyErr_SetString(PyExc_ValueError,"Gravity state shapes must match positions.");goto cleanup;
     }
     if(b[3].ndim!=1||b[3].shape[0]!=n){PyErr_SetString(PyExc_ValueError,"Mass shape must be (N,).");goto cleanup;}
+    if(record_open(&rec,record_object,n,requested)<0)goto cleanup;
     for(int i=0;i<4;++i)for(int j=i+1;j<4;++j){
         uintptr_t p=(uintptr_t)b[i].buf,q=(uintptr_t)b[j].buf;
         if(p<q+b[j].len&&q<p+b[i].len){PyErr_SetString(PyExc_ValueError,"Gravity buffers must not overlap.");goto cleanup;}
@@ -834,6 +842,7 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
             for(int k=0;k<3*n;++k)v[k]*=factor;
         }
         ++done;
+        record_step(&rec,done-1,n,x,v,x,NULL);  /* open space: the unwrapped positions are the positions */
         if((done%64==0||done==requested)&&PyErr_CheckSignals()<0){
             if(!PyErr_ExceptionMatches(PyExc_KeyboardInterrupt))goto cleanup;
             PyErr_Clear();interrupted=1;break;
@@ -845,6 +854,7 @@ static PyObject *advance_gravity(PyObject *self, PyObject *args) {
         if(ws!=&local)remember(ws,n,x,NULL,origin,scalars,!continued,mass,(size_t)n,NULL,0,U,W);
     }
 cleanup:
+    record_close(&rec);
     release_workspace(&local);
     for(int k=0;k<4;++k)if(b[k].obj)PyBuffer_Release(&b[k]);
     return result;

@@ -83,7 +83,7 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.dimension` | 3, or 2 for a flat system: the number of columns of positions and velocities |
 | `system.walls` | Names of the walls, such as `("left", "right", "bottom", "top")`; empty for a periodic box |
 | `system.rho` | Current N / volume (N / area for a flat system); NaN for an unconfined cluster |
-| `system.box.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system) |
+| `system.box`, `.lengths`, `.volume` | Box lengths and volume (two lengths and the area for a flat system). The box can be changed in place, `system.box[0] *= 2` ([below](#change-the-box)) |
 | `system.atoms.positions`, `.masses` | Read-only array snapshots |
 | `system.atoms.velocities` | Read-only snapshot, or None before velocities are assigned |
 | `system.atoms.molecule_ids` | IDs identifying molecular partners |
@@ -91,12 +91,80 @@ sets the thermostat target, not an immediate velocity reset.
 | `system.time`, `.step` | Clock of the state: zero for a new geometry, where the run ended for `run.state` |
 | `system.copy()` | Independent copy of the physical state |
 | `system.with_velocities(velocities)` | Copy with other velocities and the same positions, box and clock ([below](#reverse-or-perturb-velocities)) |
+| `system.draw(ax=None, *, radius=None, projection="perspective")` | A still picture of the atoms in a matplotlib figure ([below](#draw-a-picture)) |
 | `system.with_box(box)` | Copy in a larger periodic box, contents centred and molecules whole; enlarging one side gives a slab with vacuum ([evaporation](../water.md#evaporation-a-slab-with-vacuum)). Between walls the atoms stay where they are and the far wall moves |
 
 Array snapshots do not let you edit the running simulation. Construct a new
 System to specify different coordinates; use `with_velocities` for different
 velocities. The explicit-array convenience
 `System.from_arrays(positions, velocities, box, ...)` is also available.
+
+## Draw a picture
+
+```python
+ax = state.draw()                       # a matplotlib Axes; ax.figure is the figure
+ax.figure.savefig("crystal.png", dpi=200)
+
+fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+first.state.draw(ax=axes[0])            # draw into a figure of your own
+second.state.draw(ax=axes[1], view="front", projection="orthographic")
+```
+
+`draw` gives a still picture for reports and books: each atom is a shaded ball,
+drawn from the back to the front, with far atoms faded, the box edges and bonds.
+Colours and sizes are those of `run.view()`. `run.draw(frame)` draws a saved frame
+of a run (the last by default), with the run's own sizes. Even 13 500 atoms draw
+and save in a fraction of a second.
+
+### Which way you look
+
+`view` says where you look from. z is always up, as in matplotlib's 3D plots, and
+small arrows in the corner show which way x, y and z point. An axis along the line
+of sight is a circle: with a dot when it points towards you, a cross when it points
+away.
+
+| `view` | You look at | Right | Up |
+|---|---|---|---|
+| `"angled"` (the default) | the box from the front left, a little from above | | z |
+| `"front"` | the xz plane, along +y | x | z |
+| `"side"` | the yz plane, along −x | y | z |
+| `"top"` | the xy plane, down along −z | x | y |
+| `(elevation, azimuth)` | from that elevation above the xy plane and azimuth from the x axis, in degrees | | z |
+
+![The same crystal seen in six ways](../images/draw_views.png)
+
+`projection="perspective"` (the default) makes near atoms larger;
+`projection="orthographic"` keeps sizes equal, which suits face-on views of a
+lattice. Without a `view`, orthographic projection gives `"front"`, and a box much
+longer in z than across (a slab with vacuum) lies across the picture, as in the
+player. `arrows=False` leaves out the arrows. A flat system is drawn as it is,
+with x and y axes, solid walls and dashed periodic sides.
+
+![A flat box with walls, a mixture, and a water slab](../images/draw_systems.png)
+
+`radius` sets the display radius, a number or one per species; the default is 0.5
+(sigma = 1), the player's sizes for water and 0.035 for an open cluster.
+
+## Change the box
+
+The box is the one thing in a state that can be changed directly:
+
+```python
+state = run.state
+state.box[0] *= 2          # twice as long along x
+state.box[:] = 20, 20, 20  # or set every length
+next_run = sim.run(state, steps=1000)
+```
+
+The atoms keep their positions; the next run starts from the new box. Across a
+periodic axis, atoms that are now outside the box are wrapped back in. A smaller
+box can therefore put atoms almost on top of each other, which makes the run blow
+up: shrink a dense system a little at a time, or let a barostat (`ensemble="npt"`)
+do it. Between walls, the wall at 0 stays and the far wall moves to the new
+length; every atom must still be inside, so squeeze atoms with a
+[piston](../walls.md) instead. `run.state` is the same state each time you read
+it, so `run.state.box[0] *= 2` is kept for `sim.run(run.state)`. `with_box`
+instead centres the contents in a larger periodic box.
 
 ### Reverse or perturb velocities
 

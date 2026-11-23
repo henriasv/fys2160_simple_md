@@ -10,6 +10,11 @@ if TYPE_CHECKING:  # pandas is loaded only when Run.thermo is read.
     import pandas as pd
 
 
+def _readonly(array):
+    array.flags.writeable = False
+    return array
+
+
 def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + '.tmp')
     temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
@@ -40,6 +45,10 @@ class Run:
         It holds positions, velocities, box, masses and species, plus the clock
         and thermostat/barostat state, so continuing from it matches one longer run.
         """
+        # One state per Run, so that a change such as run.state.box[0] *= 2 is
+        # kept for the next sim.run(run.state).
+        if getattr(self, '_state', None) is not None:
+            return self._state
         from .system import System
         from .bonds import read_bond
         if self.metadata.get('status') not in ('completed', 'interrupted') or not (self.path/'checkpoint.npz').exists():
@@ -60,6 +69,7 @@ class Run:
             if 'pppm_settings' in data:
                 accuracy, cutoff = (float(v) for v in data['pppm_settings'])
                 state._pppm = (data['pppm_state'].copy(), accuracy, cutoff)
+        self._state = state
         return state
 
     @property
@@ -86,6 +96,98 @@ class Run:
         if not frames:
             raise ValueError('This run contains no saved trajectory frames.')
         return {key: np.stack([frame[key] for frame in frames]) for key in frames[0]}
+
+    def _sampled(self, key):
+        """One stacked frame array, loaded with the others on first use and kept."""
+        if getattr(self, '_frames', None) is None:
+            paths = sorted((self.path / 'frames').glob('*.npz'))
+            if not paths:
+                raise ValueError('This run saved no frames: run it with trajectory_every set.')
+            with np.load(paths[0], allow_pickle=False) as first:
+                size = len(paths) * sum(first[k].nbytes for k in first.files)
+            if size > 2e9:
+                raise MemoryError(f'The saved frames would take {size/1e9:.1f} GB in memory. Read them one at '
+                                  'a time with iter_frames(), or save fewer (a larger trajectory_every).')
+            self._frames = {key: _readonly(value) for key, value in self.load_frames().items()}
+        return self._frames[key]
+
+    @property
+    def positions(self) -> np.ndarray:
+        """Saved positions, one row per saved step: (saved steps, atoms, dimensions)."""
+        return self._sampled('positions')
+
+    @property
+    def velocities(self) -> np.ndarray:
+        """Saved velocities: (saved steps, atoms, dimensions)."""
+        return self._sampled('velocities')
+
+    @property
+    def unwrapped(self) -> np.ndarray:
+        """Saved positions not wrapped into the box, for displacements: (saved steps, atoms, dimensions)."""
+        return self._sampled('unwrapped')
+
+    @property
+    def boxes(self) -> np.ndarray:
+        """Box lengths at each saved step: (saved steps, dimensions)."""
+        return self._sampled('box')
+
+    @property
+    def steps(self) -> np.ndarray:
+        """Step number of each saved frame."""
+        return self._sampled('step')
+
+    @property
+    def times(self) -> np.ndarray:
+        """Simulation time of each saved frame."""
+        return self._sampled('time')
+
+    def draw(self, frame=-1, ax=None, *, view=None, projection='perspective', radius=None, arrows=True):
+        """Draw one saved frame as balls in a matplotlib figure and return its Axes.
+
+        ``frame`` indexes the saved frames (``run.steps``), the last by default.
+        Views, sizes and colours as in ``System.draw``.
+        """
+        from .drawing import draw_atoms, display_radii
+        from .system import _walled
+        from .visualization import _display
+        config = self.metadata['configuration']
+        species = np.array(self.metadata['atom_species'])
+        positions, box = self.positions[frame], self.boxes[frame]
+        D = positions.shape[1]
+        model = config['model']
+        if radius is None:
+            sigma, _ = _display(config, species.tolist(), None)
+            radii = (np.array([sigma[name] for name in species]) if isinstance(sigma, dict)
+                     else np.full(len(species), float(sigma)))/2
+        else:
+            radii = display_radii(species, model, radius)
+        if model == 'water-rigid':
+            bonds = [(i, i+k) for i in range(0, len(species), 3) for k in (1, 2)]
+        elif model.startswith('diatomic'):
+            bonds = [(i, i+1) for i in range(0, len(species), 2)]
+        else:
+            bonds = []
+        boundary = config.get('boundary', 'periodic')
+        open_space = boundary == 'open'
+        walled = (False,)*D if open_space else _walled(boundary if isinstance(boundary, str) else tuple(boundary), D)
+        return draw_atoms(positions, box, species, radii, bonds=bonds, walled=walled, framed=not open_space,
+                          ax=ax, view=view, projection=projection, arrows=arrows)
+
+    @property
+    def measured(self) -> dict[str, np.ndarray]:
+        """The run's measurements (``measure=``), one value per step from the start; empty without them."""
+        if not (self.path / 'measure.npz').exists():
+            return {}
+        with np.load(self.path / 'measure.npz', allow_pickle=False) as data:
+            return {key: data[key].copy() for key in data.files if key != 'steps'}
+
+    @property
+    def measured_steps(self) -> np.ndarray:
+        """Step numbers of the values in ``measured``."""
+        if not (self.path / 'measure.npz').exists():
+            return np.empty(0, dtype=int)
+        with np.load(self.path / 'measure.npz', allow_pickle=False) as data:
+            return data['steps'].copy()
 
     def plot(self, *quantities, x='time'):
         """Plot one quantity per panel, with no twin axes."""
