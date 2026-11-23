@@ -1,9 +1,13 @@
 """Still pictures in matplotlib: state.draw() and run.draw()."""
+import importlib.util
 import os
 import tempfile
 import unittest
 import numpy as np
 
+# matplotlib comes with the notebook extras; the wheel builds test without it.
+if importlib.util.find_spec('matplotlib') is None:
+    raise unittest.SkipTest('drawing needs matplotlib')
 os.environ.setdefault('MPLBACKEND', 'Agg')
 import matplotlib.pyplot as plt
 from matplotlib.collections import EllipseCollection, LineCollection
