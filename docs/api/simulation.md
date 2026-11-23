@@ -120,17 +120,17 @@ Do not pass both names for the same option. New examples use the descriptive nam
 ### Your own measurements
 
 Anything you can compute from the saved frames you can also compute during the
-run, at every step, without saving the frames. First, from saved frames:
+run, at every step, without saving the frames. First, from a saved run:
 
 ```python
 import numpy as np
 
-def left_half(positions, box):
-    """Number of atoms in the left half of the box, at each step."""
-    return np.sum(positions[:, :, 0] < box[0]/2, axis=1)
+def left_half(result):
+    """Number of atoms in the left half of the box, at each saved step."""
+    return np.sum(result.positions[:, :, 0] < result.boxes[0, 0]/2, axis=1)
 
 result = sim.run(gas, steps=20_000, thermo_every=10, trajectory_every=10)
-left_half(result.positions, result.boxes[0])   # one value per saved frame
+left_half(result)            # one value per saved frame
 ```
 
 Then the same function, given to the run:
@@ -142,26 +142,18 @@ result.thermo["N_left"]      # each row: the mean over the steps since the previ
 result.measured["N_left"]    # one value per step, from the start; result.measured_steps
 ```
 
-The function says what it needs by the names of its arguments:
-
-| Argument | Shape | Meaning |
-|---|---|---|
-| `positions` | (steps, atoms, dimensions) | Positions, wrapped into the box |
-| `velocities` | (steps, atoms, dimensions) | Velocities |
-| `unwrapped` | (steps, atoms, dimensions) | Positions not wrapped, for displacements |
-| `box` | (dimensions,) | The box lengths (at the start of the block of steps) |
-| `boxes` | (steps, dimensions) | The box at each step, for runs whose box changes (barostat, piston) |
-| `steps`, `times` | (steps,) | Step number and time of each step |
-
-It must return one value per step: sum or average over the atoms (`axis=1`), not
-over the steps too. During the run it is called for blocks of up to 256 steps, which
-the solver records as it goes, so it costs about as much as numpy needs for the
-arrays: counting the atoms in the left half of 200 atoms at every step slows a run
-by about 10%. The thermo column has the mean of the steps since the previous row,
-and the first row has the starting state. `sim.start(state, measure=...)` takes
-the same dictionary; `live.observables` then has each value at the current step
-and `live.measured` the values of every step so far. Like the other controls, a
-measurement applies to that run only.
+During the run, the function's argument holds a block of consecutive steps with
+the same attributes as the saved run, one row per step: `positions`, `velocities`
+and `unwrapped` (steps, atoms, dimensions), `boxes` (steps, dimensions), `steps`
+and `times`. It must return one value per step: sum or average over the atoms
+(`axis=1`), not over the steps too. The solver records the steps as it goes and
+calls the function for blocks of up to 256 of them, so it costs about as much as
+numpy needs for the arrays: counting the atoms in the left half of 200 atoms at
+every step slows a run by 5 to 15%. The thermo column has the mean of the steps
+since the previous row, and the first row has the starting state.
+`sim.start(state, measure=...)` takes the same dictionary; `live.observables` then
+has each value at the current step and `live.measured` the values of every step so
+far. Like the other controls, a measurement applies to that run only.
 
 ## Saved runs and states
 

@@ -84,7 +84,7 @@ with `measure=` ([your own measurements](simulation.md#your-own-measurements)).
 
 ```python
 x = result.positions[:, :, 0]               # x of every atom in every saved frame
-n_left = np.sum(x < result.boxes[:, None, 0]/2, axis=1)
+n_left = np.sum(x < result.boxes[0, 0]/2, axis=1)
 ```
 
 A `Run` refers to a directory, not an immutable copy. Replacing that storage name

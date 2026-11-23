@@ -70,34 +70,44 @@ def _species_values(value, name, zero):
     return _positive(value, name, zero=zero)
 
 
-# What a measurement function may ask for, by the names of its parameters.
-MEASURE_ARGUMENTS = ('positions', 'velocities', 'unwrapped', 'box', 'boxes', 'steps', 'times')
-
-
 def _measurements(measure):
-    """Check ``measure={name: function}`` and find the arrays each function asks for."""
+    """Check ``measure={name: function}``: each function takes one argument, the result."""
     if measure is None:
         return {}
     if not isinstance(measure, dict):
         raise TypeError('measure must be a dictionary of named functions, such as measure={"N_left": left_half}.')
-    checked = {}
     for name, function in measure.items():
         if not isinstance(name, str) or not name.strip() or name != name.strip():
             raise ValueError(f'A measurement name must be a nonempty string without surrounding spaces, not {name!r}.')
         if not callable(function):
             raise TypeError(f'measure[{name!r}] must be a function.')
         try:
-            parameters = inspect.signature(function).parameters
-        except (TypeError, ValueError):
-            raise TypeError(f'measure[{name!r}]: cannot read the names of its arguments.') from None
-        names = tuple(parameters)
-        unknown = [p for p in names if p not in MEASURE_ARGUMENTS] + [
-            p.name for p in parameters.values() if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
-        if not names or unknown:
-            raise ValueError(f'measure[{name!r}]: its arguments must be named from {", ".join(MEASURE_ARGUMENTS)}'
-                             + (f'; {", ".join(unknown)} is not one of them.' if unknown else '.'))
-        checked[name] = (function, names)
-    return checked
+            inspect.signature(function).bind(None)
+        except TypeError:
+            raise TypeError(f'measure[{name!r}] must take one argument, the result, as in '
+                            'def left_half(result): return np.sum(result.positions[:, :, 0] < 50, axis=1).') from None
+        except ValueError:
+            pass  # no signature to check (a builtin): try it
+    return dict(measure)
+
+
+class Frames:
+    """Consecutive steps of a running simulation, given to a measurement function.
+
+    It has the same attributes as a saved run's frames, with one row per step:
+    positions, velocities and unwrapped (steps, atoms, dimensions), boxes (steps,
+    dimensions), steps and times. A function written for a saved run, such as
+    ``np.sum(result.positions[:, :, 0] < result.boxes[0, 0]/2, axis=1)``, works here too.
+    """
+
+    def __init__(self, positions, velocities, unwrapped, boxes, steps, times):
+        self.positions, self.velocities, self.unwrapped = positions, velocities, unwrapped
+        self.boxes, self.steps, self.times = boxes, steps, times
+        for array in (positions, velocities, unwrapped, boxes, steps, times):
+            array.flags.writeable = False
+
+    def __repr__(self):
+        return f'Frames(steps {self.steps[0]} to {self.steps[-1]})'
 
 
 class MDSimulation:
@@ -299,13 +309,12 @@ class MDSimulation:
         the moving wall has done on the atoms.
 
         ``measure={"N_left": left_half}`` adds a thermo column computed by your own
-        function at every step. The function names the arrays it needs, from
-        positions, velocities, unwrapped (each steps x atoms x dimensions), box
-        (the box lengths), boxes (one row per step), steps and times, and returns
-        one value per step: ``np.sum(positions[:, :, 0] < box[0]/2, axis=1)``. Each
-        thermo row has the mean since the previous row; ``run.measured`` has every
-        step. The same function works on the saved frames: ``left_half(run.positions,
-        run.boxes[0])``.
+        function at every step. The function takes one argument with the attributes
+        of a saved run's frames (positions, velocities and unwrapped: steps x atoms x
+        dimensions; boxes, steps and times), one row per step, and returns one value
+        per step: ``np.sum(result.positions[:, :, 0] < result.boxes[0, 0]/2, axis=1)``.
+        It works the same on a saved run, ``left_half(run)``. Each thermo row has the
+        mean since the previous row; ``run.measured`` has every step.
         """
         storage_name = _storage_name(self.storage_name if storage_name is None else storage_name)
         steps = _integer(steps, 'steps', 0)
@@ -446,12 +455,11 @@ class LiveRun:
         clash = [name for name in self._measure if name in engine.observables or name == 'steps']
         if clash:
             raise ValueError(f'The measurement name {clash[0]!r} is taken; choose another name.')
-        self._wanted = {argument for _, arguments in self._measure.values() for argument in arguments}
         self._series = {name: [] for name in self._measure}
         self._series_steps = []
         self._pending = {}
         if self._measure:
-            self._record(self._now_arrays())
+            self._record(self._now())
 
     def _advance(self, steps):
         """Take steps; True if a keyboard interrupt stopped them early."""
@@ -472,56 +480,48 @@ class LiveRun:
         block = max(1, min(256, int(16e6//(24*n))))
         while steps > 0:
             take = min(steps, block)
-            record = tuple(np.empty((take, n, 3)) if name in self._wanted else None
-                           for name in ('positions', 'velocities', 'unwrapped')) + (
-                           np.empty((take, 3)) if 'boxes' in self._wanted else None,)
+            record = (np.empty((take, n, 3)), np.empty((take, n, 3)), np.empty((take, n, 3)), np.empty((take, 3)))
             box, step, time, dt = engine._box[:D].copy(), engine.step, engine.time, engine.settings['timestep']
             interrupted = engine._advance(take, record=record)
             done = engine.step-step
             if done:
                 counted = np.arange(1, done+1)
-                arrays = dict(box=box, steps=step+counted, times=time+dt*counted)
-                for name, array in zip(('positions', 'velocities', 'unwrapped'), record):
-                    if array is not None:
-                        arrays[name] = array[:done, :, :D]
-                if record[3] is not None:
-                    # Gravity has no box to record: it stays the viewing frame.
-                    arrays['boxes'] = np.repeat(box[None], done, axis=0) if engine.pair_potential == 'gravity' else record[3][:done, :D]
-                self._record(arrays)
+                # Gravity has no box to record: it stays the viewing frame.
+                boxes = np.repeat(box[None], done, axis=0) if engine.pair_potential == 'gravity' else record[3][:done, :D]
+                self._record(Frames(record[0][:done, :, :D], record[1][:done, :, :D], record[2][:done, :, :D],
+                                    boxes, step+counted, time+dt*counted))
             steps -= done
             if interrupted:
                 return True
         return False
 
-    def _now_arrays(self):
-        """The current state as a block of one step."""
+    def _now(self):
+        """The current state as Frames of one step."""
         engine = self._engine
         D = engine.dimension
-        box = engine._box[:D].copy()
-        return dict(positions=engine._x[None, :, :D].copy(), velocities=engine._v[None, :, :D].copy(),
-                    unwrapped=engine._u[None, :, :D].copy(), box=box, boxes=box[None].copy(),
-                    steps=np.array([engine.step]), times=np.array([engine.time]))
+        return Frames(engine._x[None, :, :D].copy(), engine._v[None, :, :D].copy(), engine._u[None, :, :D].copy(),
+                      engine._box[None, :D].copy(), np.array([engine.step]), np.array([engine.time]))
 
-    def _evaluate(self, arrays):
+    def _evaluate(self, frames):
         """Each measurement for the steps of a block, checked: one finite value per step."""
-        count = len(arrays['steps'])
+        count = len(frames.steps)
         values = {}
-        for name, (function, arguments) in self._measure.items():
-            value = np.asarray(function(**{argument: arrays[argument] for argument in arguments}), dtype=float)
+        for name, function in self._measure.items():
+            value = np.asarray(function(frames), dtype=float)
             if value.shape != (count,):
                 hint = (' It gave a single number: sum or average over the atoms only, for example with axis=1.'
                         if value.ndim == 0 else '')
                 raise ValueError(f'The measurement {name!r} must give one value per step, an array of length {count}; '
                                  f'it gave shape {value.shape}.{hint}')
             if not np.isfinite(value).all():
-                step = int(arrays['steps'][np.argmin(np.isfinite(value))])
+                step = int(frames.steps[np.argmin(np.isfinite(value))])
                 raise ValueError(f'The measurement {name!r} is not finite at step {step}.')
             values[name] = value
         return values
 
-    def _record(self, arrays):
-        values = self._evaluate(arrays)
-        self._series_steps.append(arrays['steps'])
+    def _record(self, frames):
+        values = self._evaluate(frames)
+        self._series_steps.append(frames.steps)
         for name, value in values.items():
             self._series[name].append(value)
             total, count = self._pending.get(name, (0., 0))
@@ -590,7 +590,7 @@ class LiveRun:
         """
         values = dict(self._engine.observables)
         if self._measure:
-            values.update({name: float(value[0]) for name, value in self._evaluate(self._now_arrays()).items()})
+            values.update({name: float(value[0]) for name, value in self._evaluate(self._now()).items()})
         return values
 
     @property

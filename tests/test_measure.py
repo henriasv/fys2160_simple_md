@@ -5,8 +5,8 @@ import numpy as np
 from fys2160_md import FCC, MDSimulation, Plummer, Random, RigidWater
 
 
-def left_half(positions, box):
-    return np.sum(positions[:, :, 0] < box[0]/2, axis=1)
+def left_half(result):
+    return np.sum(result.positions[:, :, 0] < result.boxes[0, 0]/2, axis=1)
 
 
 def flat_gas():
@@ -22,7 +22,7 @@ class Measure(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def test_the_same_function_on_saved_frames_and_during_the_run(self):
+    def test_the_same_function_on_the_saved_run_and_during_it(self):
         run = self.sim.run(flat_gas(), steps=60, thermo_every=10, trajectory_every=1,
                            measure={'N_left': left_half})
         np.testing.assert_array_equal(run.positions, run.load_frames()['positions'])
@@ -30,7 +30,7 @@ class Measure(unittest.TestCase):
         self.assertEqual(run.boxes.shape, (61, 2))
         np.testing.assert_array_equal(run.steps, np.arange(61))
         np.testing.assert_array_equal(run.measured_steps, np.arange(61))
-        np.testing.assert_array_equal(run.measured['N_left'], left_half(run.positions, run.boxes[0]))
+        np.testing.assert_array_equal(run.measured['N_left'], left_half(run))
         # Each thermo row after the first is the mean over the steps since the previous row.
         thermo = run.thermo
         series = run.measured['N_left']
@@ -54,20 +54,20 @@ class Measure(unittest.TestCase):
             live.advance(25)
         np.testing.assert_array_equal(live.measured['N_left'], run.measured['N_left'])
         np.testing.assert_array_equal(live.measured_steps, run.measured_steps)
-        self.assertEqual(live.observables['N_left'], left_half(live.positions[None], live.box)[0])
+        self.assertEqual(live.observables['N_left'], np.sum(live.positions[:, 0] < live.box[0]/2))
 
-    def test_every_argument_and_a_changing_box(self):
-        def everything(positions, velocities, unwrapped, box, boxes, steps, times):
-            self.assertEqual(positions.shape, velocities.shape)
-            self.assertEqual(unwrapped.shape, positions.shape)
-            self.assertEqual(boxes.shape, (len(steps), 3))
-            self.assertEqual(box.shape, (3,))
-            np.testing.assert_allclose(times, steps*0.005)
-            return boxes[:, 0]
+    def test_every_attribute_and_a_changing_box(self):
+        def length(result):
+            self.assertEqual(result.positions.shape, result.velocities.shape)
+            self.assertEqual(result.unwrapped.shape, result.positions.shape)
+            self.assertEqual(result.boxes.shape, (len(result.steps), 3))
+            np.testing.assert_allclose(result.times, result.steps*0.005)
+            self.assertFalse(result.positions.flags.writeable)
+            return result.boxes[:, 0]
         sim = MDSimulation(pair_potential='lj', ensemble='npt', temperature=1.0, pressure=1.0, timestep=0.005,
                            cutoff=2.5, output_dir=self.directory.name)
         run = sim.run(FCC(N=108, rho=.7), steps=50, thermo_every=10, trajectory_every=10,
-                      measure={'length': everything})
+                      measure={'length': length})
         lengths = run.measured['length']
         self.assertGreater(np.ptp(lengths), 0)  # the barostat moves the box
         np.testing.assert_array_equal(lengths[run.steps], run.boxes[:, 0])
@@ -78,23 +78,23 @@ class Measure(unittest.TestCase):
         sim = MDSimulation(units='real', epsilon={'O': .15535, 'H': 0.}, sigma={'O': 3.166, 'H': 0.},
                            lj_shift=False, ensemble='nvt', temperature=300, timestep=1.0, cutoff=5.0,
                            output_dir=self.directory.name)
-        live = sim.start(water, measure={'O_left': lambda positions, box: np.sum(positions[:, ::3, 0] < box[0]/2, axis=1)})
+        live = sim.start(water, measure={'O_left': lambda r: np.sum(r.positions[:, ::3, 0] < r.boxes[:, None, 0]/2, axis=1)})
         live.advance(20)
         self.assertEqual(len(live.measured['O_left']), 21)
         cluster = Plummer(N=64, seed=4)
         gravity = MDSimulation(pair_potential='gravity', ensemble='nve', timestep=0.01, cutoff=None,
                                output_dir=self.directory.name)
-        spread = gravity.start(cluster, measure={'spread': lambda unwrapped: unwrapped[:, :, 0].std(axis=1)})
+        spread = gravity.start(cluster, measure={'spread': lambda r: r.unwrapped[:, :, 0].std(axis=1)})
         spread.advance(10)
         self.assertEqual(len(spread.measured['spread']), 11)
 
     def test_mistakes_are_explained(self):
         with self.assertRaisesRegex(ValueError, 'one value per step.*axis=1'):
-            self.sim.start(flat_gas(), measure={'total': lambda positions: np.sum(positions[:, :, 0] < 15)})
+            self.sim.start(flat_gas(), measure={'total': lambda r: np.sum(r.positions[:, :, 0] < 15)})
         with self.assertRaisesRegex(ValueError, 'not finite'):
-            self.sim.start(flat_gas(), measure={'bad': lambda steps: np.full(len(steps), np.nan)})
-        with self.assertRaisesRegex(ValueError, 'x is not one of them'):
-            self.sim.start(flat_gas(), measure={'bad': lambda x: x})
+            self.sim.start(flat_gas(), measure={'bad': lambda r: np.full(len(r.steps), np.nan)})
+        with self.assertRaisesRegex(TypeError, 'one argument, the result'):
+            self.sim.start(flat_gas(), measure={'bad': lambda positions, box: positions})
         with self.assertRaisesRegex(ValueError, 'is taken'):
             self.sim.start(flat_gas(), measure={'temperature': left_half})
         with self.assertRaisesRegex(TypeError, 'dictionary'):
