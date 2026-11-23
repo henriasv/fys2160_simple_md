@@ -365,6 +365,23 @@ class System:
         other._wall_sums=None if self._wall_sums is None else self._wall_sums.copy()
         return other
 
+    def draw(self, ax=None, *, radius=None, projection='perspective'):
+        """Draw the atoms as balls in a matplotlib figure and return its Axes.
+
+        The view, colours and sizes are those of ``run.view()``: an angled view in
+        perspective, face-on to the xz plane in ``projection="orthographic"``, and
+        a flat system as it is. ``radius`` is a display radius (a number, or one
+        per species); by default 0.5 (sigma = 1), and the player's sizes for water.
+        Give ``ax`` to draw into a figure of your own; ``ax.figure.savefig(...)``
+        saves it.
+        """
+        from .drawing import draw_atoms, display_radii
+        if radius is None and self.boundary == 'open':
+            radius = .035
+        return draw_atoms(self._x[:, :self._dim], self._box[:self._dim], self._species,
+                          display_radii(self._species, self.model, radius), bonds=self.bonds,
+                          walled=tuple(self._walled), framed=self.boundary != 'open', ax=ax, projection=projection)
+
     @classmethod
     def from_arrays(cls, positions, velocities, box, *, masses=None, molecule=None, bond=None, model=None, species=None, boundary="periodic", units="reduced"):
         return cls(positions,box,velocities=velocities,masses=masses,model=model,molecule=molecule,bond=bond,species=species,boundary=boundary,units=units)

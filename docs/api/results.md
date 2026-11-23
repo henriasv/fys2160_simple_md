@@ -20,6 +20,7 @@ Loading a run reads files and does **not** start a simulation.
 | `run.iter_frames()` | Stream saved frame dictionaries one at a time |
 | `run.load_frames()` | Stack all frames in memory; raises if none were saved |
 | `run.view(...)` | Self-contained HTML trajectory player for notebook output |
+| `run.draw(frame=-1, ax=None, *, radius=None, projection="perspective")` | A still picture of a saved frame in a matplotlib figure ([drawing](system.md#draw-a-picture)) |
 
 ## Replay
 

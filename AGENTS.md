@@ -393,3 +393,12 @@ change trajectories (test). All four arrays are always recorded. Cost: 200 flat 
 thermo_every=10 and 141k -> 133k at 100, with N_left. The same function applied to run.positions gives the in-run
 values at the saved steps; the docs present the post-processing way first. The
 Pyodide smoke test has a measurement, but was not run here (no wasm build).
+
+2026-11-23 (0.4.0, same branch): still pictures. `state.draw()` and `run.draw(frame=-1)`
+(`drawing.py`, matplotlib imported on use) return a matplotlib Axes: per atom a rim,
+body and highlight ellipse in one EllipseCollection (units "xy"), interleaved and
+sorted far to near, far atoms faded to the background; box edges split into behind
+(under the atoms) and in front; bonds as lines with molecules made whole by minimum
+image. Views, colours and radii follow the player (`_rotation` mirrors viewer.js:
+angled, across a slab's long axis, or face-on xz in orthographic). 13 500 atoms draw
+and save at 150 dpi in about 0.1 s. `tests/test_drawing.py`.

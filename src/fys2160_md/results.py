@@ -141,6 +141,38 @@ class Run:
         """Simulation time of each saved frame."""
         return self._sampled('time')
 
+    def draw(self, frame=-1, ax=None, *, radius=None, projection='perspective'):
+        """Draw one saved frame as balls in a matplotlib figure and return its Axes.
+
+        ``frame`` indexes the saved frames (``run.steps``), the last by default.
+        Sizes and colours are those of ``run.view()``; see ``System.draw``.
+        """
+        from .drawing import draw_atoms, display_radii
+        from .system import _walled
+        from .visualization import _display
+        config = self.metadata['configuration']
+        species = np.array(self.metadata['atom_species'])
+        positions, box = self.positions[frame], self.boxes[frame]
+        D = positions.shape[1]
+        model = config['model']
+        if radius is None:
+            sigma, _ = _display(config, species.tolist(), None)
+            radii = (np.array([sigma[name] for name in species]) if isinstance(sigma, dict)
+                     else np.full(len(species), float(sigma)))/2
+        else:
+            radii = display_radii(species, model, radius)
+        if model == 'water-rigid':
+            bonds = [(i, i+k) for i in range(0, len(species), 3) for k in (1, 2)]
+        elif model.startswith('diatomic'):
+            bonds = [(i, i+1) for i in range(0, len(species), 2)]
+        else:
+            bonds = []
+        boundary = config.get('boundary', 'periodic')
+        open_space = boundary == 'open'
+        walled = (False,)*D if open_space else _walled(boundary if isinstance(boundary, str) else tuple(boundary), D)
+        return draw_atoms(positions, box, species, radii, bonds=bonds, walled=walled, framed=not open_space,
+                          ax=ax, projection=projection)
+
     @property
     def measured(self) -> dict[str, np.ndarray]:
         """The run's measurements (``measure=``), one value per step from the start; empty without them."""
