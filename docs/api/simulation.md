@@ -219,8 +219,8 @@ velocities gets random ones. The result is a `LiveRun`:
 |---|---|
 | `live.advance(steps)` | Take this many MD steps (a nonnegative integer) |
 | `live.observables` | Dictionary of the current thermodynamic quantities: the columns `run` records in `thermo.csv`, with the wall forces, impulses and `work` for a state with [walls](../walls.md) |
-| `live.positions`, `live.velocities` | Read-only (atoms, 3) snapshots, or (atoms, 2) for a flat system; positions are wrapped into the box along periodic directions |
-| `live.box` | Read-only snapshot of the box lengths (three, or two for a flat system), as in a saved frame; a piston changes it |
+| `live.positions`, `live.velocities`, `live.masses` | (atoms, 3) snapshots, or (atoms, 2) for a flat system; positions are wrapped into the box along periodic directions. Assign to change the run from the next step, `live.velocities = 1.1*live.velocities` |
+| `live.box`, `live.tilt` | Snapshots of the box lengths (three, or two for a flat system) and tilt, as in a saved frame; a piston changes the box. Assign to change them, `live.box = (20, 20, 20)` |
 | `live.step`, `live.time` | Clock, continuing from the state's |
 | `live.set(timestep=, ensemble=, temperature=, pressure=, heat_rate=, piston=)` | Change controls for the steps that follow; omitted ones keep their values |
 | `live.settings` | The controls now in force |

@@ -362,12 +362,14 @@ class MDSimulation:
         frame_index = 0
         last_sample = last_frame = -1
         status = 'completed'
+        tilted = bool(engine._tilt.any())
         def frame():
             nonlocal frame_index, last_frame
             D = engine.dimension
             np.savez_compressed(path/'frames'/f'{frame_index:07d}.npz',
                 positions=engine._x[:, :D], unwrapped=engine._u[:, :D], velocities=engine._v[:, :D],
-                box=engine._box[:D], step=engine.step, time=engine.time)
+                box=engine._box[:D], step=engine.step, time=engine.time,
+                **({'tilt': engine._tilt} if tilted else {}))
             frame_index += 1
             last_frame = engine.step
         try:
@@ -606,20 +608,80 @@ class LiveRun:
 
     @property
     def positions(self):
-        """Read-only snapshot of the positions, one row per atom: (x, y, z), or
-        (x, y) for a flat system. Wrapped into the box along periodic directions."""
+        """Snapshot of the positions, one row per atom: (x, y, z), or (x, y) for a
+        flat system. Wrapped into the box along periodic directions.
+
+        A snapshot keeps its values as the run goes on, so ``before = live.positions``
+        can be compared later. To change the run, assign new positions:
+        ``x = live.positions.copy(); x[0, 0] += 1; live.positions = x``. They take
+        effect from the next step; the unwrapped positions move with them.
+        """
         return _readonly(self._engine._x[:, :self._engine.dimension])
+
+    @positions.setter
+    def positions(self, value):
+        engine = self._engine
+        value = self._replacement(value, (len(engine._x), engine.dimension), 'positions')
+        engine._u[:, :engine.dimension] += value-engine._x[:, :engine.dimension]
+        engine._x[:, :engine.dimension] = value
 
     @property
     def velocities(self):
-        """Read-only snapshot of the velocities, one row per atom, with the columns of ``positions``."""
+        """Snapshot of the velocities, one row per atom, with the columns of ``positions``.
+        Assign to change the run from the next step: ``live.velocities = 1.1*live.velocities``.
+        The thermostat removes a total momentum; without it the whole system drifts."""
         return _readonly(self._engine._v[:, :self._engine.dimension])
+
+    @velocities.setter
+    def velocities(self, value):
+        engine = self._engine
+        engine._v[:, :engine.dimension] = self._replacement(value, (len(engine._v), engine.dimension), 'velocities')
+
+    @property
+    def masses(self):
+        """Snapshot of the masses; assign to change them from the next step."""
+        return _readonly(self._engine._mass)
+
+    @masses.setter
+    def masses(self, value):
+        value = self._replacement(value, self._engine._mass.shape, 'masses')
+        if np.any(value <= 0):
+            raise ValueError('masses must be positive.')
+        self._engine._mass[:] = value
 
     @property
     def box(self):
-        """Read-only snapshot of the box lengths (three, or two for a flat system),
-        as in a saved frame. A piston changes the length along its axis."""
+        """Snapshot of the box lengths (three, or two for a flat system), as in a
+        saved frame. A piston changes the length along its axis. Assign to change
+        the box from the next step, ``live.box = (20, 20, 20)``: atoms keep their
+        positions and are wrapped into a periodic box as they move."""
         return _readonly(self._engine._box[:self._engine.dimension])
+
+    @box.setter
+    def box(self, value):
+        engine = self._engine
+        value = self._replacement(value, (engine.dimension,), 'box')
+        if np.any(value <= 0):
+            raise ValueError('box lengths must be positive.')
+        engine._box[:engine.dimension] = value
+
+    @property
+    def tilt(self):
+        """Snapshot of the tilt factors (xy, xz, yz) of a tilted box; assign to change them from the next step."""
+        return _readonly(self._engine._tilt)
+
+    @tilt.setter
+    def tilt(self, value):
+        self._engine._tilt[:] = self._replacement(value, (3,), 'tilt')
+
+    def _replacement(self, value, shape, name):
+        self._check()
+        value = np.array(value, dtype=float)
+        if value.shape != shape:
+            raise ValueError(f'{name} must have shape {shape}.')
+        if not np.isfinite(value).all():
+            raise ValueError(f'{name} must be finite.')
+        return value
 
     @property
     def state(self):
@@ -695,6 +757,8 @@ class _Engine:
         self._pair_parameters = np.ascontiguousarray(np.column_stack((per_atom(self._epsilon, system._species), per_atom(self._sigma, system._species))))
         self._x = system._x
         self._box = system._box
+        self._tilt = system._tilt  # the solver scales it with the box under a barostat
+        self._stress = np.zeros(6)
         self._mass = system._mass
         self.cutoff = sim.cutoff
         self.skin = sim.skin
@@ -726,7 +790,9 @@ class _Engine:
             self._v = system._v
             momentum = self._v*self._mass[:, None]
             if np.linalg.norm(momentum.sum(axis=0)[conserved]) > 1e-10*max(1., np.linalg.norm(momentum)):
-                raise ValueError('Remove centre-of-mass velocity before starting this solver.')
+                raise ValueError('The total momentum must be zero along periodic directions, or the whole system '
+                                 'drifts. After changing velocities, subtract the mean: state.velocities -= '
+                                 'np.average(state.velocities, axis=0, weights=state.masses).')
         self._u = self._x.copy() if system._u is None else system._u
         system._u = self._u
         self._f = np.zeros_like(self._x)
@@ -844,7 +910,7 @@ class _Engine:
         self._v[::2] -= correction/self._mass[::2, None]
         self._v[1::2] += correction/self._mass[1::2, None]
 
-    def _advance(self, steps, measure=False, record=None):
+    def _advance(self, steps, measure=False, record=None, stress=None):
         """Take steps in the solver. ``record`` is None or arrays (positions, velocities,
         unwrapped, box), each None or with a row for every step, which the solver fills."""
         c = self.settings
@@ -869,7 +935,7 @@ class _Engine:
             self._rng, MODELS[self.model], c['heat_rate'],
             c['pressure'] if c['ensemble'] in ('nph','npt') else -1., self._baromass, self._rate,
             int(sim.pair_potential == 'lj96'), int(sim.exclude_bonded_pairs), .7, 0., 0., 0., 1., 1., self._pair_parameters, self._system._bond_parameters, self._workspace, int(measure),
-            self.dimension, self._external, self._wall_sums, record)
+            self.dimension, self._external, self._wall_sums, record, self._tilt, stress)
         self._potential, self._virial, self._rng, done, interrupted, self._rate, numerator = result
         self._pressure_numerator = numerator if measure else None
         self.step += done
@@ -943,6 +1009,13 @@ class _Engine:
         if self.kind == 'molecular' and self._charge is not None:
             values['lj_energy'] = self._terms['lj']
             values['coulomb_energy'] = self._terms['coulomb']+self._terms['kspace']
+        if self.kind == 'pair' and self.model == 'atomic' and not self._walls:
+            # The pressure tensor (stress with the opposite sign), from a pass over the pairs.
+            self._advance(0, stress=self._stress)
+            components = ('xx', 'yy', 'xy') if D == 2 else ('xx', 'yy', 'zz', 'xy', 'xz', 'yz')
+            index = dict(xx=0, yy=1, zz=2, xy=3, xz=4, yz=5)
+            for name in components:
+                values[f'p{name}'] = float(self._stress[index[name]])/V*U.pressure
         if self._walls:
             for name, (force, impulse, _) in zip(self._walls, self._wall_sums.tolist()):
                 values[f'wall_force_{name}'] = force
@@ -987,6 +1060,7 @@ class _Engine:
         with (path/'checkpoint.tmp').open('wb') as stream:
             np.savez_compressed(stream, positions=self._x[:, :D], velocities=self._v[:, :D],
                 unwrapped=self._u[:, :D], masses=self._mass, box=self._box[:D], species=self._system._species,
+                **({'tilt': self._tilt} if self._tilt.any() else {}),
                 **({'wall_sums': self._wall_sums[:, 1:]} if self._walls else {}),
                 rng=np.uint64(self._rng), step=self.step, time=self.time,
                 heat_added=self.heat_added, barostat_rate=state._rate, barostat_mass=self._baromass,

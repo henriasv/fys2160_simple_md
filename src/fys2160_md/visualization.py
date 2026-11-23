@@ -64,7 +64,8 @@ class LiveView:
         obs = sim.observables
         return dict(x=np.round(sim._x[:LiveView.visible(sim)], 5).tolist(), box=sim._box.tolist(),
                     step=sim.step, time=sim.time, temperature=obs['temperature'],
-                    pressure=obs['pressure'] if sim.system.boundary != 'open' else None)
+                    pressure=obs['pressure'] if sim.system.boundary != 'open' else None,
+                    **({'tilt': sim._tilt.tolist()} if sim._tilt.any() else {}))
 
     @staticmethod
     def visible(sim):
@@ -135,7 +136,8 @@ def trajectory_player(run, *, max_frames=150, max_atoms=3000, projection='perspe
             if x.shape[1] == 2:  # a flat system is drawn in the plane z = 0 of a box without thickness
                 x, box = np.column_stack((x, np.zeros(len(x)))), np.append(box, 0.)
             frames.append(dict(x=np.round(x, 5).tolist(),
-                               box=box.tolist(), time=float(f['time']), step=int(f['step'])))
+                               box=box.tolist(), time=float(f['time']), step=int(f['step']),
+                               **({'tilt': f['tilt'].tolist()} if 'tilt' in f.files else {})))
     species = run.metadata.get('atom_species', [])[:int(max_atoms)]
     display_sigma, extra = _display(config, species, particle_radius)
     data = dict(boundary=config.get('boundary','periodic'), frames=frames, projection=projection, zoom=zoom, sigma=display_sigma, species=species, molecular=config['model'] != 'atomic', renderer=renderer, **extra)

@@ -99,10 +99,12 @@ class GeometryTests(unittest.TestCase):
         sim._advance(5)
         np.testing.assert_array_equal(system.atoms.positions,[[4,5,5],[5.2,5,5]])
         np.testing.assert_array_equal(system.atoms.velocities,[[.1,0,0],[-.1,0,0]])
-        snapshot=sim.system.atoms.positions
-        self.assertFalse(snapshot.flags.writeable)
-        snapshot.setflags(write=True);snapshot[:]=0
-        self.assertFalse(np.all(sim.system.atoms.positions==0))
+        # The run works on its own copy: the state given to it is unchanged, while
+        # the run's arrays are its own and can be changed.
+        np.testing.assert_array_equal(system.atoms.positions,[[4,5,5],[5.2,5,5]])
+        sim.system.atoms.positions[0,0]=3.
+        self.assertEqual(sim._x[0,0],3.)
+        self.assertEqual(system.atoms.positions[0,0],4.)
 
     def test_pressure_control_changes_only_the_output_box(self):
         system=FCC(N=108,rho=.05)

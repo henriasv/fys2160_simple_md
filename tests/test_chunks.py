@@ -230,7 +230,7 @@ class ChunkTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 state.with_velocities(bad)
         velocities[0] += [1., 0, 0]
-        with self.assertRaisesRegex(ValueError, 'centre-of-mass'):
+        with self.assertRaisesRegex(ValueError, 'total momentum'):
             sim.start(state.with_velocities(velocities))
         rigid = Random(N=20, rho=.02, molecule='diatomic', bond=RigidBond(length=.7))
         moving = MDSimulation(ensemble='nve', temperature=1.).start(rigid).state
