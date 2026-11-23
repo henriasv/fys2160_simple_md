@@ -1,4 +1,4 @@
-"""Unit systems: reduced Lennard-Jones units (default) and LAMMPS ``real`` units."""
+"""Unit systems: reduced Lennard-Jones units (default) and LAMMPS ``real`` and ``metal`` units."""
 from dataclasses import dataclass
 
 
@@ -22,11 +22,15 @@ REDUCED = Units('reduced', 1., 1., 1., 1., 'fixed reduced reference units: lengt
 REAL = Units('real', 0.0019872067, 48.88821291**2, 332.06371, 68568.415,
              'LAMMPS real units: length Å, time fs, mass g/mol, energy kcal/mol, temperature K, pressure atm, charge e',
              'fs', 'K', 'atm', 'kcal/mol')
-UNITS = {'reduced': REDUCED, 'real': REAL}
+# Constants as in LAMMPS units metal: Å, ps, g/mol, eV, K, bar, e.
+METAL = Units('metal', 8.617343e-5, 1.0364269e-4, 14.399645, 1.6021765e6,
+              'LAMMPS metal units: length Å, time ps, mass g/mol, energy eV, temperature K, pressure bar, charge e',
+              'ps', 'K', 'bar', 'eV')
+UNITS = {'reduced': REDUCED, 'real': REAL, 'metal': METAL}
 AVOGADRO_PER_CM3_A3 = 0.602214076  # (g/mol)/Å^3 -> g/cm^3 divisor
 
 
 def units(name):
     if name not in UNITS:
-        raise ValueError('units must be "reduced" or "real".')
+        raise ValueError('units must be "reduced", "real" or "metal".')
     return UNITS[name]

@@ -64,7 +64,8 @@ class Run:
                            tilt=data['tilt'] if 'tilt' in data else None, **bond)
             state._rng = int(data['rng'])
             state._heat = float(data['heat_added'])
-            state._rate = float(data['barostat_rate'])
+            rate = data['barostat_rate']
+            state._rate = float(rate) if rate.ndim == 0 else rate.copy()  # one per axis if anisotropic
             if 'wall_sums' in data:
                 state._wall_sums = data['wall_sums'].copy()
             if 'pppm_settings' in data:
@@ -169,7 +170,7 @@ class Run:
             radii = (np.array([sigma[name] for name in species]) if isinstance(sigma, dict)
                      else np.full(len(species), float(sigma)))/2
         else:
-            radii = display_radii(species, model, radius)
+            radii = display_radii(species, model, radius, config.get('units', 'reduced'))
         if model == 'water-rigid':
             bonds = [(i, i+k) for i in range(0, len(species), 3) for k in (1, 2)]
         elif model.startswith('diatomic'):

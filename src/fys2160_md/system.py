@@ -548,7 +548,7 @@ class System:
         if radius is None and self.boundary == 'open':
             radius = .035
         return draw_atoms(self._x[:, :self._dim], self._box[:self._dim], self._species,
-                          display_radii(self._species, self.model, radius), bonds=self.bonds,
+                          display_radii(self._species, self.model, radius, self.units), bonds=self.bonds,
                           walled=tuple(self._walled), framed=self.boundary != 'open', ax=ax, view=view,
                           projection=projection, arrows=arrows, tilt=self._tilt)
 

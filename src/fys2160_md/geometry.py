@@ -367,3 +367,55 @@ def _random_water(*, N, rho, box, min_distance, max_attempts, model, molecule, b
     labels = np.tile(['O', 'H', 'H'], N)
     return System(positions % lengths, lengths, molecule='water', bond=water, species=labels,
                   masses=per_atom(masses, labels), units='real')
+
+
+def AlphaQuartz(*, cells=(4, 2, 3), a=4.9134, c=5.4052):
+    """Alpha-quartz (SiO2) in LAMMPS metal units (Å, g/mol), in a rectangular box.
+
+    The crystal is built from rectangular cells of a by sqrt(3)*a by c, each holding
+    two hexagonal unit cells (6 Si and 12 O), repeated ``cells`` = (nx, ny, nz) times
+    along x, y and z: the default (4, 2, 3) has 432 atoms in a box of 19.7 x 17.0 x
+    16.2 Å. The hexagonal a axis lies along x and the c axis (the threefold screw
+    axis) along z.
+
+    a and c are the lattice constants in Å; the defaults, and the positions of the
+    atoms in the unit cell, are the measured ones at room temperature (Levien,
+    Prewitt and Weidner, Am. Mineral. 65, 920 (1980); space group P3_2 21, Si at
+    (0.4697, 0, 0), O at (0.4135, 0.2669, 0.1191)). Every Si has four O neighbours
+    at 1.60 and 1.61 Å; a simulation relaxes them to its own force field.
+    """
+    try:
+        cells = tuple(_integer(n, 'cells') for n in cells)
+    except TypeError:
+        raise ValueError('cells must be three whole numbers (nx, ny, nz).') from None
+    if len(cells) != 3:
+        raise ValueError('cells must be three whole numbers (nx, ny, nz).')
+    a, c = _positive(a, 'a'), _positive(c, 'c')
+    # The orbits of Si and O under P3_2 21 (International Tables setting, with Si at
+    # z = 2/3), in fractional coordinates of the hexagonal cell.
+    operations = [lambda x, y, z: (x, y, z), lambda x, y, z: (-y, x-y, z+2/3), lambda x, y, z: (-x+y, -x, z+1/3),
+                  lambda x, y, z: (y, x, -z), lambda x, y, z: (x-y, -y, -z+1/3), lambda x, y, z: (-x, -x+y, -z+2/3)]
+    def orbit(point):
+        found = []
+        for operation in operations:
+            p = np.mod(operation(*point), 1.)
+            if not any(np.allclose(np.mod(p-q+.5, 1.)-.5, 0, atol=1e-9) for q in found):
+                found.append(p)
+        return found
+    silicon, oxygen = orbit((0.4697, 0., 2/3)), orbit((0.4135, 0.2669, 2/3+0.1191))
+    hexagonal = np.array([[a, -a/2, 0], [0, np.sqrt(3)/2*a, 0], [0, 0, c]])  # columns: a1, a2, c
+    fractions = np.array(silicon+oxygen)
+    fractions[:, 2] -= 2/3  # the usual origin, with Si at z = 0
+    atoms = fractions@hexagonal.T
+    # A rectangular cell a1 by (a1 + 2 a2) holds the hexagonal cell and its copy moved by a2.
+    rectangle = np.array([a, np.sqrt(3)*a, c])
+    cell = np.mod(np.concatenate([atoms, atoms+hexagonal[:, 1]]), rectangle)
+    labels = np.array((['Si']*3+['O']*6)*2)
+    order = np.argsort(labels == 'O', kind='stable')  # silicon first
+    cell, labels = cell[order], labels[order]
+    nx, ny, nz = cells
+    shifts = np.array([(i, j, k) for i in range(nx) for j in range(ny) for k in range(nz)])*rectangle
+    positions = (cell[None]+shifts[:, None]).reshape(-1, 3)
+    species = np.tile(labels, len(shifts))
+    masses = np.where(species == 'Si', 28.0855, 15.9994)
+    return System(positions, rectangle*cells, species=species, masses=masses, units='metal')

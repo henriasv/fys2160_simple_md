@@ -80,7 +80,7 @@ class ChunkTests(unittest.TestCase):
         self.assertIsNone(state.atoms.velocities)
         self.assertEqual((state.step, live.step), (0, 50))
         self.assertAlmostEqual(live.time, .25)
-        self.assertEqual(live.settings, dict(ensemble='nvt', timestep=.005, temperature=2., pressure=.01, heat_rate=0.))
+        self.assertEqual(live.settings, dict(ensemble='nvt', timestep=.005, temperature=2., pressure=.01, heat_rate=0., barostat='isotropic'))
         observables = live.observables
         self.assertEqual((observables['step'], observables['time']), (live.step, live.time))
         self.assertAlmostEqual(observables['temperature'], np.sum(live.velocities**2)/(3*108-3))
@@ -150,7 +150,7 @@ class ChunkTests(unittest.TestCase):
             live.set(ensemble='npt', pressure=-1.)
         with self.assertRaises(ValueError):
             live.set(timestep=0.)
-        self.assertEqual(live.settings, dict(ensemble='nvt', timestep=.005, temperature=.8, pressure=.01, heat_rate=0.))
+        self.assertEqual(live.settings, dict(ensemble='nvt', timestep=.005, temperature=.8, pressure=.01, heat_rate=0., barostat='isotropic'))
         live.set(ensemble='nve', heat_rate=2., timestep=.002)
         energy = live.observables['total_energy']
         live.advance(100)

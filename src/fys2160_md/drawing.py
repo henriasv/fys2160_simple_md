@@ -185,12 +185,17 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
     return ax
 
 
-def display_radii(species, model, radius=None):
+def display_radii(species, model, radius=None, units='reduced'):
     """One display radius per atom: ``radius`` (a number or one per species), else the player's sizes."""
-    from .visualization import WATER_DISPLAY
+    from .visualization import WATER_DISPLAY, ELEMENT_DISPLAY
     names = [str(name) for name in dict.fromkeys(species)]
     if radius is None:
-        radius = {name: WATER_DISPLAY.get(name, 1.)/2 for name in names} if model == 'water-rigid' else .5
+        if model == 'water-rigid':
+            radius = {name: WATER_DISPLAY.get(name, 1.)/2 for name in names}
+        elif units == 'metal':  # crystals with species named after elements, as the player shows them
+            radius = {name: ELEMENT_DISPLAY.get(name, 1.)/2 for name in names}
+        else:
+            radius = .5
     if isinstance(radius, dict):
         missing = [name for name in names if name not in radius]
         if missing:
