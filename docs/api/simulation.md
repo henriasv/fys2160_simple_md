@@ -25,12 +25,12 @@ MDSimulation(*, pair_potential="lj", epsilon=1., sigma=1.,
              pressure_time=None, heat_rate=0., seed=87287, output_dir="runs",
              storage_name="simulation", units="reduced", charge=None,
              coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True,
-             wall_stiffness=1e4)
+             wall_stiffness=1e4, barostat="isotropic", tail=False)
 ```
 
 | Setting | Meaning |
 |---|---|
-| `pair_potential` | `"lj"` (12–6, default), `"lj96"` (9–6), or isolated `"gravity"` |
+| `pair_potential` | `"lj"` (12–6, default), `"lj96"` (9–6), isolated `"gravity"`, or a dictionary of [Buckingham terms](interactions.md#buckingham-terms-per-pair-of-species) per pair of species |
 | `epsilon`, `sigma` | Positive scalar or per-species dictionary; both default to 1 |
 | `mixing_rule` | `"lorentz-berthelot"`: arithmetic sigma and geometric epsilon; the currently supported rule |
 | `exclude_bonded_pairs` | True by default: connected atom pairs feel the bond only |
@@ -41,20 +41,24 @@ MDSimulation(*, pair_potential="lj", epsilon=1., sigma=1.,
 | `G`, `softening` | Gravity coupling (default 1) and smoothing length (default 0.05); softening=0 gives exact inverse-square gravity |
 | `friction` | Langevin friction, inverse time |
 | `pressure`, `pressure_time` | Default target pressure and barostat time scale |
+| `barostat` | `"isotropic"` (default) scales the box keeping its shape; `"anisotropic"` lets each box length follow its own diagonal pressure component (atoms with charges or Buckingham terms, or in real or metal units) |
 | `heat_rate` | Default total energy added per time; zero |
 | `seed` | Seed for random velocities and for the thermostat of a state that has not run yet, integer from 1 through 2⁶⁴−1 |
 | `output_dir` | Parent folder for saved runs |
 | `storage_name` | Default run folder name; reuse replaces its previous contents |
-| `units` | `"reduced"` (default) or `"real"` (LAMMPS real units, for water); must match the states it runs |
+| `units` | `"reduced"` (default), `"real"` (LAMMPS real units, for water) or `"metal"` (LAMMPS metal units, for crystals such as quartz); must match the states it runs |
 | `charge` | Per-species charges in e; the total must be zero. Requires `coulomb="pppm"` |
 | `coulomb` | `"pppm"`: long-range electrostatics by particle-particle particle-mesh Ewald summation |
 | `coulomb_cutoff` | Real-space Ewald cutoff; defaults to `cutoff` |
 | `kspace_accuracy` | Relative PPPM force accuracy, default 1e-5 |
-| `lj_shift` | True subtracts the Lennard-Jones energy at the cutoff; False is the plain truncated potential (water, charges and real units only) |
+| `lj_shift` | True subtracts the pair energy (Lennard-Jones or Buckingham) at the cutoff; False is the plain truncated potential (water, charges, Buckingham terms, and real or metal units only) |
+| `tail` | True adds the energy and pressure of the pairs beyond the cutoff, for a uniform density there (LAMMPS `pair_modify tail yes`); needs `lj_shift=False`. For charges, Buckingham terms, and real or metal units |
 | `wall_stiffness` | For a state with [walls](../walls.md): an atom a depth d beyond a wall is pushed back with the force `wall_stiffness*d**2` |
 
 In real units (water), `temperature` (K), `timestep` (fs) and `cutoff` (Å) must be
 given, and `pressure` (atm) for npt/nph. See [Water and electrostatics](../water.md).
+Metal units need the same, with the timestep in ps and the pressure in bar; see
+[Crystals and elasticity](../crystals.md).
 
 Interaction parameters are the same for every run of a simulation and are saved
 with each result. They do not change the reference units: for example,
@@ -70,7 +74,8 @@ run = sim.run(state, steps=1000, *, timestep=None, ensemble=None,
               temperature=None, pressure=None, heat_rate=None,
               coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None,
               piston=None, thermo_every=100, trajectory_every=500, show=False,
-              max_fps=None, frame_every=100, storage_name=None, measure=None)
+              max_fps=None, frame_every=100, storage_name=None, measure=None,
+              barostat=None)
 ```
 
 | Argument | Meaning |
@@ -80,7 +85,8 @@ run = sim.run(state, steps=1000, *, timestep=None, ensemble=None,
 | `timestep`, `ensemble`, `temperature`, `pressure`, `heat_rate` | Controls for this run only; None uses the constructor's value |
 | `temperature` | Thermostat target from the first step of this run (a step change, not a ramp); velocities are not reset, so the thermostat relaxes the system towards it |
 | `coulomb_cutoff`, `kspace_accuracy` | Electrostatics settings of a charged system for this run |
-| `deform` | nve/nvt only: scale every box length linearly to this factor by the end of the run, moving whole molecules |
+| `deform` | nve/nvt only: scale every box length linearly to this factor by the end of the run, moving whole molecules (rectangular boxes) |
+| `barostat` | `"isotropic"` or `"anisotropic"` pressure control for this run (nph/npt) |
 | `seed` | Restart the thermostat's random sequence (and set random velocities) for this run |
 | `piston` | For a state with walls: `Piston("right", to=50, speed=0.05)` moves that wall at constant speed to the position `to`, where it stops ([pistons](../walls.md#a-piston)) |
 | `thermo_every` | Record thermodynamic quantities at this interval, in steps |
@@ -222,7 +228,7 @@ velocities gets random ones. The result is a `LiveRun`:
 | `live.positions`, `live.velocities`, `live.masses` | (atoms, 3) snapshots, or (atoms, 2) for a flat system; positions are wrapped into the box along periodic directions. Assign to change the run from the next step, `live.velocities = 1.1*live.velocities` |
 | `live.box`, `live.tilt` | Snapshots of the box lengths (three, or two for a flat system) and tilt, as in a saved frame; a piston changes the box. Assign to change them, `live.box = (20, 20, 20)` |
 | `live.step`, `live.time` | Clock, continuing from the state's |
-| `live.set(timestep=, ensemble=, temperature=, pressure=, heat_rate=, piston=)` | Change controls for the steps that follow; omitted ones keep their values |
+| `live.set(timestep=, ensemble=, temperature=, pressure=, heat_rate=, piston=, barostat=)` | Change controls for the steps that follow; omitted ones keep their values |
 | `live.settings` | The controls now in force |
 | `live.state` | The current state, an independent `System`: pass it to `sim.run` or `sim.start` |
 

@@ -346,3 +346,11 @@ The [elasticity notebook](elastic.md) strains a Lennard-Jones crystal by ±1% wi
 the pressure tensor. The moduli give sound speeds and a Debye temperature. The
 atoms' vibrational spectrum is compared with the Debye and Einstein models, and so
 is the heat capacity each implies.
+
+## Quartz: an anisotropic crystal
+
+The [quartz notebook](quartz.md) does the same for alpha-quartz with the BKS force
+field, in metal units: an anisotropic barostat relaxes the crystal, four strains
+give its six elastic constants, and its vibrational spectrum is compared with the
+Debye model and with the measured heat capacity. See
+[Crystals and elasticity](../crystals.md) for the tools it uses.

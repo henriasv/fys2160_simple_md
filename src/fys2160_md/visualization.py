@@ -7,7 +7,10 @@ import numpy as np
 
 # Ball-and-stick display diameters (Å) for water; they do not affect the physics.
 WATER_DISPLAY = {'O': .8, 'H': .5}
-VIEW_UNITS = {'real': dict(time='ps', time_scale=.001, temperature='K', pressure='atm')}
+# Display diameters (Å) for atoms named after elements in Buckingham crystals.
+ELEMENT_DISPLAY = {'O': 1.2, 'Si': .9}
+VIEW_UNITS = {'real': dict(time='ps', time_scale=.001, temperature='K', pressure='atm'),
+              'metal': dict(time='ps', time_scale=1., temperature='K', pressure='bar')}
 
 
 def _visible_atoms(limit, molecule_size):
@@ -31,6 +34,8 @@ def _display(configuration, species, particle_radius):
         sigma = .07
     elif model == 'water-rigid':
         sigma = {name: WATER_DISPLAY.get(name, 1.) for name in dict.fromkeys(species)}
+    elif configuration.get('pair_potential') == 'buckingham':
+        sigma = {name: ELEMENT_DISPLAY.get(name, 1.) for name in dict.fromkeys(species)}
     else:
         sigma = configuration.get('sigma', 1.)
     extra = {}

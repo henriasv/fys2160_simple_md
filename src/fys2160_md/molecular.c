@@ -4,11 +4,13 @@
 #include "molecular.h"
 #include <math.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "pppm.h"
 #include "record.h"
+#include "tilt.h"
 
 static double uniform01(uint64_t *state) {
     uint64_t x = *state;
@@ -28,11 +30,18 @@ static double minimum_image(double x, double length) {
 /* Constraint c joins atoms PAIR[c][0] and PAIR[c][1] of a water molecule. */
 static const int PAIR[3][2] = {{0, 1}, {0, 2}, {1, 2}};
 
+/* style 0 is the 12-6 Lennard-Jones potential (epsilon, sigma tables); style 1 is
+   Buckingham, A exp(-r/rho) - C/r^6, with four numbers per pair of types: A, rho, C
+   and the inner barrier, closer than which the potential falls without bound. tilt
+   is NULL for a rectangular box, which keeps the per-axis code; atoms only. */
 typedef struct {
-    int n, size, molecules, types, coulomb;
-    const double *mass, *charge, *epsilon, *sigma;
+    int n, size, molecules, types, coulomb, style;
+    const double *mass, *charge, *epsilon, *sigma, *buckingham;
     const int *type;
-    double *shift;
+    double *shift, *tilt;
+    /* With a tail correction: the energy and virial of the pairs beyond the cutoff
+       times the volume, for a uniform density there (zero without). */
+    double tail_energy, tail_virial;
     double cutoff, coulomb_cutoff, extent, alpha, qqr2e, mvv2e, g;
     double constraint[3];
 } Model;
@@ -43,7 +52,9 @@ typedef struct {
     double *reference, box[3], radius;
 } MoleculeList;
 
-typedef struct { double lj, coulomb, kspace, virial, molecular_virial; } Terms;
+/* lj holds the short-range pair energy (Lennard-Jones or Buckingham). tensor is the
+   virial tensor xx, yy, zz, xy, xz, yz, kept for atoms only. */
+typedef struct { double lj, coulomb, kspace, virial, molecular_virial, tensor[6]; } Terms;
 /* What one run keeps between calls into the solver: the molecule list, the PPPM
    mesh and work arrays, and the positions, box, forces and energies exactly as
    the previous call left them. inputs holds everything else the forces depend
@@ -54,7 +65,7 @@ typedef struct {
     MoleculeList nb;
     PPPM pppm;
     int pppm_ready, n, current;
-    double *site, *offset, *site_force, *x, *u, *f, box[3], *inputs, *kept_inputs;
+    double *site, *offset, *site_force, *x, *u, *f, box[3], tilt[3], *inputs, *kept_inputs;
     size_t input_count;
     Terms terms;
 } MolecularWorkspace;
@@ -103,13 +114,27 @@ static void sites_and_offsets(const Model *m, const double *x, const double *box
     }
 }
 
+/* The periodic shift that brings the origin of the molecule at b0 nearest to the one at a0. */
+static void pair_shift(const Model *m, const double *x, int a0, int b0, const double *box, double shift[3]) {
+    if (m->tilt) {
+        double image[3];
+        for (int d = 0; d < 3; ++d) image[d] = x[3*a0+d] - x[3*b0+d];
+        tilted_image(image, box, m->tilt);
+        for (int d = 0; d < 3; ++d) shift[d] = x[3*a0+d] - x[3*b0+d] - image[d];
+    } else for (int d = 0; d < 3; ++d) shift[d] = box[d]*nearbyint((x[3*a0+d] - x[3*b0+d])/box[d]);
+}
+
 static int build_list(MoleculeList *nb, const Model *m, const double *x, const double *u, const double *box) {
     nb->size = 0;
     double r2max = nb->radius*nb->radius;
     for (int I = 0; I < m->molecules; ++I) for (int J = I+1; J < m->molecules; ++J) {
         int a = m->size*I, b = m->size*J;
         double r2 = 0;
-        for (int d = 0; d < 3; ++d) {
+        if (m->tilt) {
+            double dr[3] = {x[3*a] - x[3*b], x[3*a+1] - x[3*b+1], x[3*a+2] - x[3*b+2]};
+            tilted_image(dr, box, m->tilt);
+            r2 = dr[0]*dr[0] + dr[1]*dr[1] + dr[2]*dr[2];
+        } else for (int d = 0; d < 3; ++d) {
             double dx = minimum_image(x[3*a+d] - x[3*b+d], box[d]);
             r2 += dx*dx;
         }
@@ -143,6 +168,11 @@ static int needs_rebuild(const MoleculeList *nb, int n, const double *u, const d
     return 0;
 }
 
+static void add_tensor(double tensor[6], double coefficient, const double dr[3]) {
+    tensor[0] += coefficient*dr[0]*dr[0]; tensor[1] += coefficient*dr[1]*dr[1]; tensor[2] += coefficient*dr[2]*dr[2];
+    tensor[3] += coefficient*dr[0]*dr[1]; tensor[4] += coefficient*dr[0]*dr[2]; tensor[5] += coefficient*dr[1]*dr[2];
+}
+
 static int forces(const Model *m, const MoleculeList *nb, PPPM *pppm, const double *x, const double *box,
                   double *site, double *offset, double *site_force, double *f, Terms *t, Timings *clock_) {
     double start = seconds();
@@ -155,11 +185,12 @@ static int forces(const Model *m, const MoleculeList *nb, PPPM *pppm, const doub
     for (size_t p = 0; p < nb->size; ++p) {
         int a0 = size*nb->pairs[2*p], b0 = size*nb->pairs[2*p+1];
         double shift[3];
-        for (int d = 0; d < 3; ++d) shift[d] = box[d]*nearbyint((x[3*a0+d] - x[3*b0+d])/box[d]);
+        pair_shift(m, x, a0, b0, box, shift);
         for (int a = a0; a < a0+size; ++a) for (int b = b0; b < b0+size; ++b) {
             int pair = m->type[a]*m->types + m->type[b];
+            const double *bk = m->style ? m->buckingham + 4*(size_t)pair : NULL;
             double epsilon = m->epsilon[pair];
-            if (epsilon == 0) continue;
+            if (bk ? bk[0] == 0 && bk[2] == 0 : epsilon == 0) continue;
             double dr[3], r2 = 0;
             for (int d = 0; d < 3; ++d) {
                 dr[d] = x[3*a0+d] + offset[3*a+d] - x[3*b0+d] - offset[3*b+d] - shift[d];
@@ -170,10 +201,27 @@ static int forces(const Model *m, const MoleculeList *nb, PPPM *pppm, const doub
                 PyErr_SetString(PyExc_ValueError, "Overlapping atoms or unstable trajectory; check positions and timestep.");
                 return -1;
             }
-            double s2 = m->sigma[pair]*m->sigma[pair]/r2, inv6 = s2*s2*s2;
-            double coefficient = epsilon*24*inv6*(2*inv6 - 1)/r2;
-            t->lj += epsilon*4*inv6*(inv6 - 1) - m->shift[pair];
+            double coefficient;
+            if (bk) {
+                if (r2 < bk[3]*bk[3]) {
+                    char message[300];
+                    snprintf(message, sizeof message, "Atoms %d and %d came %.3g apart, inside the barrier of their "
+                             "Buckingham potential at %.3g, where it falls without bound (as BKS does at short range). "
+                             "Use a shorter timestep or a lower temperature, or start from a better structure.",
+                             a, b, sqrt(r2), bk[3]);
+                    PyErr_SetString(PyExc_ValueError, message);
+                    return -1;
+                }
+                double r = sqrt(r2), repulsion = bk[0]*exp(-r/bk[1]), inv6 = 1/(r2*r2*r2);
+                coefficient = repulsion/(bk[1]*r) - 6*bk[2]*inv6/r2;
+                t->lj += repulsion - bk[2]*inv6 - m->shift[pair];
+            } else {
+                double s2 = m->sigma[pair]*m->sigma[pair]/r2, inv6 = s2*s2*s2;
+                coefficient = epsilon*24*inv6*(2*inv6 - 1)/r2;
+                t->lj += epsilon*4*inv6*(inv6 - 1) - m->shift[pair];
+            }
             t->virial += coefficient*r2;
+            if (size == 1) add_tensor(t->tensor, coefficient, dr);
             for (int d = 0; d < 3; ++d) { f[3*a+d] += coefficient*dr[d]; f[3*b+d] -= coefficient*dr[d]; }
         }
         if (!m->coulomb) continue;
@@ -191,6 +239,7 @@ static int forces(const Model *m, const MoleculeList *nb, PPPM *pppm, const doub
                 double coefficient;
                 t->coulomb += coulomb_term(r2, m->qqr2e*m->charge[s]*m->charge[q], m->g, 0, &coefficient);
                 t->virial += coefficient*r2;
+                if (size == 1) add_tensor(t->tensor, coefficient, dr);
                 for (int d = 0; d < 3; ++d) { site_force[3*s+d] += coefficient*dr[d]; site_force[3*q+d] -= coefficient*dr[d]; }
             }
         }
@@ -206,15 +255,17 @@ static int forces(const Model *m, const MoleculeList *nb, PPPM *pppm, const doub
             t->virial += coefficient*r2;
             for (int d = 0; d < 3; ++d) { site_force[3*s+d] += coefficient*dr[d]; site_force[3*q+d] -= coefficient*dr[d]; }
         }
-        double kspace_virial, middle = seconds();
+        double kspace_virial, kspace_tensor[6], middle = seconds();
         clock_->pair += middle - start;
-        if (pppm_compute(pppm, box, n, site, m->charge, m->qqr2e, site_force, &t->kspace, &kspace_virial) < 0) {
+        if (pppm_compute(pppm, box, m->tilt, n, site, m->charge, m->qqr2e, site_force, &t->kspace, &kspace_virial,
+                         size == 1 ? kspace_tensor : NULL) < 0) {
             PyErr_SetString(PyExc_FloatingPointError, "PPPM failed; check the box, charges and timestep.");
             return -1;
         }
         start = seconds();
         clock_->kspace += start - middle;
         t->virial += kspace_virial;
+        if (size == 1) for (int k = 0; k < 6; ++k) t->tensor[k] += kspace_tensor[k];
         if (size == 1) for (int k = 0; k < 3*n; ++k) f[k] += site_force[k];
         else for (int I = 0; I < m->molecules; ++I) for (int d = 0; d < 3; ++d) {
             int o = 3*I;
@@ -223,6 +274,12 @@ static int forces(const Model *m, const MoleculeList *nb, PPPM *pppm, const doub
             f[3*(o+1)+d] += m->alpha*fm + site_force[3*(o+1)+d];
             f[3*(o+2)+d] += m->alpha*fm + site_force[3*(o+2)+d];
         }
+    }
+    if (m->tail_energy != 0 || m->tail_virial != 0) {
+        double volume = box[0]*box[1]*box[2];
+        t->lj += m->tail_energy/volume;
+        t->virial += m->tail_virial/volume;
+        if (size == 1) for (int d = 0; d < 3; ++d) t->tensor[d] += m->tail_virial/(3*volume);
     }
     t->molecular_virial = t->virial;
     clock_->pair -= start;
@@ -246,6 +303,17 @@ static double kinetic(const Model *m, const double *v) {
     double K = 0;
     for (int i = 0; i < m->n; ++i) for (int d = 0; d < 3; ++d) K += 0.5*m->mass[i]*v[3*i+d]*v[3*i+d];
     return K*m->mvv2e;
+}
+
+/* sum m v_a v_b in energy units: xx, yy, zz, xy, xz, yz. */
+static void kinetic_tensor(const Model *m, const double *v, double out[6]) {
+    for (int k = 0; k < 6; ++k) out[k] = 0;
+    for (int i = 0; i < m->n; ++i) {
+        const double *w = v + 3*i, mass = m->mass[i];
+        out[0] += mass*w[0]*w[0]; out[1] += mass*w[1]*w[1]; out[2] += mass*w[2]*w[2];
+        out[3] += mass*w[0]*w[1]; out[4] += mass*w[0]*w[2]; out[5] += mass*w[1]*w[2];
+    }
+    for (int k = 0; k < 6; ++k) out[k] *= m->mvv2e;
 }
 
 static double centre_kinetic(const Model *m, const double *v) {
@@ -274,7 +342,8 @@ static int drift(const Model *m, double *x, double *u, const double *v, const do
             PyErr_SetString(PyExc_FloatingPointError, "Non-finite position; simulation is unstable.");
             return -1;
         }
-        x[k] -= box[d]*floor(x[k]/box[d]);
+        if (m->tilt) { if (d == 2) tilted_wrap(x + 3*i, box, m->tilt); }
+        else x[k] -= box[d]*floor(x[k]/box[d]);
     }
     return 0;
 }
@@ -402,6 +471,17 @@ static int constrained_drift(const Model *m, double *x, double *u, double *v, co
 /* Move whole molecules affinely with their centres of mass (box lengths change by
    factor along each axis). Internal geometry is unchanged. */
 static void scale_molecules(const Model *m, double *x, double *u, const double *box, const double factor[3]) {
+    if (m->tilt) {
+        /* Atoms in a tilted box: x' = F x with F = diag(factor), which takes the box to
+           F H, so the tilt scales with its row: xy and xz along x, yz along y. */
+        double lengths[3] = {box[0]*factor[0], box[1]*factor[1], box[2]*factor[2]};
+        m->tilt[0] *= factor[0]; m->tilt[1] *= factor[0]; m->tilt[2] *= factor[1];
+        for (int i = 0; i < m->n; ++i) {
+            for (int d = 0; d < 3; ++d) { x[3*i+d] *= factor[d]; u[3*i+d] *= factor[d]; }
+            tilted_wrap(x + 3*i, lengths, m->tilt);
+        }
+        return;
+    }
     double *arrays[2] = {x, u};
     for (int I = 0; I < m->molecules; ++I) {
         int o = m->size*I;
@@ -438,20 +518,42 @@ static void scale_centre_velocities(const Model *m, double *v, double factor) {
     }
 }
 
-/* state: mesh x,y,z, g, reference box x,y,z, estimated relative accuracy. */
+/* Anisotropic MTK for atoms: each axis has its own strain rate, driven by its
+   diagonal component of the pressure tensor, with inertia baromass/3, so equal
+   rates are the isotropic barostat. The box scales as F H with F = diag(exp(rate dt)),
+   which keeps the tilt in the LAMMPS form. Conserved without a thermostat:
+   K + U + P V + (baromass/6) sum rate^2. */
+static void anisotropic_rates(const Model *m, const double *v, const Terms *t, const double *box, double pressure,
+                              double baromass, double dof, double dt, double *rates) {
+    double kinetic[6], volume = box[0]*box[1]*box[2];
+    kinetic_tensor(m, v, kinetic);
+    double twice_kinetic = kinetic[0] + kinetic[1] + kinetic[2];
+    for (int d = 0; d < 3; ++d)
+        rates[d] += 0.5*dt*((kinetic[d] + t->tensor[d] - pressure*volume) + twice_kinetic/dof)/(baromass/3);
+}
+static void anisotropic_velocities(const Model *m, double *v, double dof, double dt, const double *rates) {
+    double trace = rates[0] + rates[1] + rates[2], factor[3];
+    for (int d = 0; d < 3; ++d) factor[d] = exp(-0.5*dt*(rates[d] + trace/dof));
+    for (int i = 0; i < m->n; ++i) for (int d = 0; d < 3; ++d) v[3*i+d] *= factor[d];
+}
+
+/* state: mesh x,y,z, g, reference widths across x,y,z (the box lengths, or the
+   distances between faces of a tilted box), estimated relative accuracy. */
 static int prepare_pppm(Model *m, PPPM *pppm, int *ready, double *state, const double *box, double accuracy, int order) {
+    double width[3] = {box[0], box[1], box[2]};
+    if (m->tilt) face_distances(box, m->tilt, width);
     int select = !(state[0] >= 1);
-    for (int d = 0; d < 3 && !select; ++d) if (fabs(box[d]/state[4+d] - 1) > 0.05) select = 1;
+    for (int d = 0; d < 3 && !select; ++d) if (fabs(width[d]/state[4+d] - 1) > 0.05) select = 1;
     if (select) {
         double qsqsum = 0, g, estimate;
         int mesh[3];
         for (int i = 0; i < m->n; ++i) qsqsum += m->charge[i]*m->charge[i];
-        int status = pppm_select(box, m->n, qsqsum, m->qqr2e, m->coulomb_cutoff, accuracy, order, mesh, &g, &estimate);
+        int status = pppm_select(width, box, m->n, qsqsum, m->qqr2e, m->coulomb_cutoff, accuracy, order, mesh, &g, &estimate);
         if (status < 0) {
             PyErr_SetString(PyExc_ValueError, status == -2 ? "PPPM mesh would exceed 4096 points per side; increase coulomb_cutoff or kspace_accuracy." : "Could not choose PPPM parameters for this accuracy.");
             return -1;
         }
-        for (int d = 0; d < 3; ++d) { state[d] = mesh[d]; state[4+d] = box[d]; }
+        for (int d = 0; d < 3; ++d) { state[d] = mesh[d]; state[4+d] = width[d]; }
         state[3] = g; state[7] = estimate;
     }
     int mesh[3] = {(int)state[0], (int)state[1], (int)state[2]};
@@ -516,23 +618,27 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     static char *keywords[] = {"x", "v", "u", "f", "box", "mass", "types", "charges", "epsilon", "sigma", "pppm_state", "deform",
         "steps", "timestep", "cutoff", "coulomb_cutoff", "skin", "temperature", "friction", "seed", "heat_rate", "pressure",
         "barostat_mass", "rate", "mvv2e", "qqr2e", "molecule_size", "constraints", "alpha", "lj_shift", "coulomb",
-        "accuracy", "order", "workspace", "record", NULL};
+        "accuracy", "order", "workspace", "record", "tilt", "buckingham", "rates", "tail", NULL};
     enum { X, V, U, F, BOX, MASS, TYPES, CHARGES, EPSILON, SIGMA, STATE, BUFFERS };
+    /* Optional buffers after the fixed ones: deform, tilt, buckingham, rates. */
+    enum { DEFORM = BUFFERS, TILT, BUCK, RATES, ALL };
     PyObject *objects[BUFFERS], *deform_object, *workspace_object = NULL, *record_object = NULL, *result = NULL;
+    PyObject *tilt_object = NULL, *buck_object = NULL, *rates_object = NULL;
     Record rec;
     memset(&rec, 0, sizeof rec);
-    Py_buffer view[BUFFERS + 1];
+    Py_buffer view[ALL];
     memset(view, 0, sizeof view);
-    int requested, size, lj_shift, coulomb, order, done = 0, interrupted = 0;
+    int requested, size, lj_shift, coulomb, order, done = 0, interrupted = 0, tail = 0;
     double dt, cutoff, coulomb_cutoff, skin, T, gamma, heat, targetP, baromass, rate, mvv2e, qqr2e, alpha, accuracy;
     double constraint[3];
     unsigned long long seed;
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOOOOOOOOOiddddddKddddddi(ddd)dpidi|OO", keywords,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOOOOOOOOOiddddddKddddddi(ddd)dpidi|OOOOOp", keywords,
             &objects[X], &objects[V], &objects[U], &objects[F], &objects[BOX], &objects[MASS], &objects[TYPES],
             &objects[CHARGES], &objects[EPSILON], &objects[SIGMA], &objects[STATE], &deform_object,
             &requested, &dt, &cutoff, &coulomb_cutoff, &skin, &T, &gamma, &seed, &heat, &targetP,
             &baromass, &rate, &mvv2e, &qqr2e, &size, &constraint[0], &constraint[1], &constraint[2],
-            &alpha, &lj_shift, &coulomb, &accuracy, &order, &workspace_object, &record_object)) return NULL;
+            &alpha, &lj_shift, &coulomb, &accuracy, &order, &workspace_object, &record_object,
+            &tilt_object, &buck_object, &rates_object, &tail)) return NULL;
     Model m = {0};
     /* None or absent gives a workspace for this call only. */
     MolecularWorkspace local, *ws = &local;
@@ -560,13 +666,26 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     if (view[EPSILON].shape[1] != types || view[SIGMA].shape[0] != types || view[SIGMA].shape[1] != types) {
         PyErr_SetString(PyExc_ValueError, "epsilon and sigma tables must be square and equal."); goto cleanup;
     }
-    double *deform = NULL;
+    double *deform = NULL, *tilt = NULL, *buckingham = NULL, *rates = NULL;
     if (deform_object != Py_None) {
         Py_ssize_t six[1] = {6};
-        if (get_buffer(deform_object, &view[BUFFERS], 0, sizeof(double), "d", 1, six, "deform") < 0) goto cleanup;
-        deform = view[BUFFERS].buf;
+        if (get_buffer(deform_object, &view[DEFORM], 0, sizeof(double), "d", 1, six, "deform") < 0) goto cleanup;
+        deform = view[DEFORM].buf;
     }
-    for (int a = 0; a <= BUFFERS; ++a) for (int b = a+1; b <= BUFFERS; ++b) {
+    if (tilt_object && tilt_object != Py_None) {
+        if (get_buffer(tilt_object, &view[TILT], 1, sizeof(double), "d", 1, vector3, "tilt") < 0) goto cleanup;
+        tilt = view[TILT].buf;
+    }
+    if (buck_object && buck_object != Py_None) {
+        Py_ssize_t table4[3] = {types, types, 4};
+        if (get_buffer(buck_object, &view[BUCK], 0, sizeof(double), "d", 3, table4, "buckingham") < 0) goto cleanup;
+        buckingham = view[BUCK].buf;
+    }
+    if (rates_object && rates_object != Py_None) {
+        if (get_buffer(rates_object, &view[RATES], 1, sizeof(double), "d", 1, vector3, "rates") < 0) goto cleanup;
+        rates = view[RATES].buf;
+    }
+    for (int a = 0; a < ALL; ++a) for (int b = a+1; b < ALL; ++b) {
         if (!view[a].obj || !view[b].obj) continue;
         uintptr_t p = (uintptr_t)view[a].buf, q = (uintptr_t)view[b].buf;
         if (p < q + view[b].len && q < p + view[a].len) { PyErr_SetString(PyExc_ValueError, "Core array buffers must not overlap."); goto cleanup; }
@@ -576,6 +695,8 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     m.mass = view[MASS].buf; m.type = view[TYPES].buf; m.charge = view[CHARGES].buf;
     m.epsilon = view[EPSILON].buf; m.sigma = view[SIGMA].buf;
     m.cutoff = cutoff; m.coulomb_cutoff = coulomb ? coulomb_cutoff : 0; m.alpha = alpha;
+    m.style = buckingham != NULL; m.buckingham = buckingham;
+    m.tilt = tilted(tilt) ? tilt : NULL;
     m.qqr2e = qqr2e; m.mvv2e = mvv2e;
     memcpy(m.constraint, constraint, sizeof constraint);
     if ((size != 1 && size != 3) || n < 2 || n > 20000 || n % size || requested < 0 || !(dt > 0) || !(cutoff > 0) ||
@@ -584,6 +705,14 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         (size == 3 && (!(constraint[0] > 0) || !(constraint[1] > 0) || !(constraint[2] > 0) || alpha < 0 || alpha >= 0.5)) ||
         (deform && (targetP >= 0 || !(deform[3] > 0) || !(deform[5] >= 1) || deform[4] < 0))) {
         PyErr_SetString(PyExc_ValueError, "Invalid molecular integrator parameters."); goto cleanup;
+    }
+    if (m.tilt && (size != 1 || deform || !isfinite(tilt[0] + tilt[1] + tilt[2]) || fabs(tilt[0]) > 0.5*box[0] ||
+                   fabs(tilt[1]) > 0.5*box[0] || fabs(tilt[2]) > 0.5*box[1])) {
+        PyErr_SetString(PyExc_ValueError, "A tilted box holds atoms (not molecules), without deform, with each tilt at most "
+                        "half the length it leans along."); goto cleanup;
+    }
+    if (rates && (size != 1 || !(targetP >= 0) || !isfinite(rates[0] + rates[1] + rates[2]))) {
+        PyErr_SetString(PyExc_ValueError, "Anisotropic pressure control needs atoms and a target pressure."); goto cleanup;
     }
     m.molecules = n/size;
     for (int i = 0; i < n; ++i) {
@@ -602,13 +731,51 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         }
         double s6 = pow(m.sigma[k]/cutoff, 6);
         if (lj_shift) m.shift[k] = 4*m.epsilon[k]*s6*(s6 - 1);
+        if (buckingham) {
+            const double *bk = buckingham + 4*(size_t)k;
+            if (!(bk[0] >= 0) || !(bk[1] > 0) || !(bk[2] >= 0) || !(bk[3] >= 0) || !isfinite(bk[0] + bk[1] + bk[2] + bk[3])) {
+                PyErr_SetString(PyExc_ValueError, "Buckingham A and C must be nonnegative and rho positive."); goto cleanup;
+            }
+            m.shift[k] = lj_shift ? bk[0]*exp(-cutoff/bk[1]) - bk[2]/pow(cutoff, 6) : 0;
+        }
+    }
+    if (tail) {
+        /* Sum over ordered pairs of types a, b of N_a N_b times the integrals beyond
+           the cutoff rc of r^2 U and r^3 dU/dr: E V = 2 pi sum, W V = -2 pi sum. */
+        double *count = calloc((size_t)types, sizeof(double)), rc = cutoff;
+        if (!count) { PyErr_NoMemory(); goto cleanup; }
+        for (int i = 0; i < n; ++i) count[m.type[i]] += 1;
+        for (int a = 0; a < types; ++a) for (int b = 0; b < types; ++b) {
+            int k = a*types + b;
+            double energy, slope;
+            if (buckingham) {
+                const double *bk = buckingham + 4*(size_t)k;
+                double A = bk[0], rho = bk[1], C = bk[2], e = A*exp(-rc/rho);
+                energy = e*rho*(rc*rc + 2*rc*rho + 2*rho*rho) - C/(3*rc*rc*rc);
+                slope = -e*(rc*rc*rc + 3*rc*rc*rho + 6*rc*rho*rho + 6*rho*rho*rho) + 2*C/(rc*rc*rc);
+            } else {
+                double s3 = pow(m.sigma[k]/rc, 3), s9 = s3*s3*s3, sigma3 = pow(m.sigma[k], 3);
+                energy = 4*m.epsilon[k]*sigma3*(s9/9 - s3/3);
+                slope = 4*m.epsilon[k]*sigma3*(-4*s9/3 + 2*s3);
+            }
+            m.tail_energy += 2*3.14159265358979323846*count[a]*count[b]*energy;
+            m.tail_virial -= 2*3.14159265358979323846*count[a]*count[b]*slope;
+        }
+        free(count);
     }
     if (size == 3) m.extent = fmax(constraint[0], constraint[1]);
-    double reach = fmax(m.cutoff, m.coulomb_cutoff) + 2*m.extent;
+    double reach = fmax(m.cutoff, m.coulomb_cutoff) + 2*m.extent, width[3];
     for (int d = 0; d < 3; ++d) if (!(box[d] > 2*reach) || !isfinite(box[d])) {
         PyErr_SetString(PyExc_ValueError, "Each box length must exceed twice (cutoff + molecular diameter)."); goto cleanup;
     }
-    const size_t table = (size_t)types*types, input_count = INPUT_SCALARS + 3*(size_t)n + 2*table;
+    if (m.tilt) {
+        face_distances(box, m.tilt, width);
+        for (int d = 0; d < 3; ++d) if (!(width[d] > 2*reach)) {
+            PyErr_SetString(PyExc_ValueError, "The distance between opposite faces of the tilted box must exceed twice "
+                            "the cutoff; use a larger box or a smaller tilt."); goto cleanup;
+        }
+    }
+    const size_t table = (size_t)types*types, input_count = INPUT_SCALARS + 3*(size_t)n + 2*table + (buckingham ? 4*table : 0);
     const int kept = ws->current && ws->n == n && ws->input_count == input_count;
     ws->current = 0;
     if (prepare_workspace(ws, n, input_count) < 0) goto cleanup;
@@ -619,17 +786,19 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         /* Everything the forces depend on besides positions and box. */
         const double scalars[INPUT_SCALARS] = {cutoff, m.coulomb_cutoff, skin, size, alpha, lj_shift, coulomb, qqr2e,
             constraint[0], constraint[1], constraint[2], coulomb ? order : 0, coulomb ? state[0] : 0,
-            coulomb ? state[1] : 0, coulomb ? state[2] : 0, coulomb ? state[3] : 0};
+            coulomb ? state[1] : 0, coulomb ? state[2] : 0, coulomb ? state[3] : 0, m.style, tail};
         double *inputs = ws->inputs;
         memcpy(inputs, scalars, sizeof scalars);
         inputs += INPUT_SCALARS;
         for (int i = 0; i < n; ++i) { inputs[3*i] = m.mass[i]; inputs[3*i+1] = m.charge[i]; inputs[3*i+2] = m.type[i]; }
         memcpy(inputs + 3*(size_t)n, m.epsilon, table*sizeof(double));
         memcpy(inputs + 3*(size_t)n + table, m.sigma, table*sizeof(double));
+        if (buckingham) memcpy(inputs + 3*(size_t)n + 2*table, buckingham, 4*table*sizeof(double));
     }
     const size_t state_bytes = (size_t)n*3*sizeof(double);
     if (kept && memcmp(ws->inputs, ws->kept_inputs, input_count*sizeof(double)) == 0 && memcmp(ws->x, x, state_bytes) == 0 &&
-        memcmp(ws->u, u, state_bytes) == 0 && memcmp(ws->box, box, sizeof ws->box) == 0) {
+        memcmp(ws->u, u, state_bytes) == 0 && memcmp(ws->box, box, sizeof ws->box) == 0 &&
+        memcmp(ws->tilt, m.tilt ? m.tilt : NO_TILT, sizeof ws->tilt) == 0) {
         /* Continue the previous call: its list and forces still hold. */
         memcpy(f, ws->f, state_bytes);
         terms = ws->terms;
@@ -640,17 +809,21 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     /* Molecular MTK: barostat couples to centre-of-mass motion and the molecular
        virial. Conserved with gamma=heat=0: K + U + P*V + baromass*rate^2/2. */
     while (done < requested) {
-        if (targetP >= 0) {
+        if (rates) {
+            anisotropic_rates(&m, v, &terms, box, targetP, baromass, centre_dof, dt, rates);
+            anisotropic_velocities(&m, v, centre_dof, dt, rates);
+        } else if (targetP >= 0) {
             double K = centre_kinetic(&m, v), volume = box[0]*box[1]*box[2];
             rate += 0.5*dt*((2*K + terms.molecular_virial - 3*targetP*volume) + 6*K/centre_dof)/baromass;
             scale_centre_velocities(&m, v, exp(-0.5*dt*(1 + 3/centre_dof)*rate));
         }
         kick(&m, v, f, 0.5*dt);
         if (targetP >= 0) {
-            double factor = exp(0.5*dt*rate), factors[3] = {factor, factor, factor};
-            if (!isfinite(factor) || factor < 0.9 || factor > 1.1) { PyErr_SetString(PyExc_ValueError, "Unstable barostat; increase pressure_time or reduce timestep."); goto cleanup; }
+            double factors[3];
+            for (int d = 0; d < 3; ++d) factors[d] = exp(0.5*dt*(rates ? rates[d] : rate));
+            for (int d = 0; d < 3; ++d) if (!isfinite(factors[d]) || factors[d] < 0.9 || factors[d] > 1.1) { PyErr_SetString(PyExc_ValueError, "Unstable barostat; increase pressure_time or reduce timestep."); goto cleanup; }
             scale_molecules(&m, x, u, box, factors);
-            for (int d = 0; d < 3; ++d) box[d] *= factor;
+            for (int d = 0; d < 3; ++d) box[d] *= factors[d];
         }
         if (gamma > 0) {
             if (constrained_drift(&m, x, u, v, box, 0.5*dt) < 0) goto cleanup;
@@ -659,9 +832,10 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
             if (constrained_drift(&m, x, u, v, box, 0.5*dt) < 0) goto cleanup;
         } else if (constrained_drift(&m, x, u, v, box, dt) < 0) goto cleanup;
         if (targetP >= 0) {
-            double factor = exp(0.5*dt*rate), factors[3] = {factor, factor, factor};
+            double factors[3];
+            for (int d = 0; d < 3; ++d) factors[d] = exp(0.5*dt*(rates ? rates[d] : rate));
             scale_molecules(&m, x, u, box, factors);
-            for (int d = 0; d < 3; ++d) box[d] *= factor;
+            for (int d = 0; d < 3; ++d) box[d] *= factors[d];
         }
         if (deform) {
             double step = deform[4] + done + 1, factors[3];
@@ -672,6 +846,12 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         for (int d = 0; d < 3; ++d) if (!(box[d] > 2*reach)) {
             PyErr_SetString(PyExc_ValueError, "Box contracted below twice (cutoff + molecular diameter)."); goto cleanup;
         }
+        if (m.tilt) {
+            face_distances(box, m.tilt, width);
+            for (int d = 0; d < 3; ++d) if (!(width[d] > 2*reach)) {
+                PyErr_SetString(PyExc_ValueError, "The tilted box contracted below twice the cutoff between faces."); goto cleanup;
+            }
+        }
         if (coulomb && prepare_pppm(&m, pppm, &ws->pppm_ready, state, box, accuracy, order) < 0) goto cleanup;
         double listed = seconds();
         if (needs_rebuild(nb, n, u, box, skin) && build_list(nb, &m, x, u, box) < 0) goto cleanup;
@@ -679,7 +859,10 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
         if (forces(&m, nb, pppm, x, box, site, offset, site_force, f, &terms, &timing) < 0) goto cleanup;
         kick(&m, v, f, 0.5*dt);
         if (size == 3 && constrain_velocities(&m, v, x, box) < 0) goto cleanup;
-        if (targetP >= 0) {
+        if (rates) {
+            anisotropic_velocities(&m, v, centre_dof, dt, rates);
+            anisotropic_rates(&m, v, &terms, box, targetP, baromass, centre_dof, dt, rates);
+        } else if (targetP >= 0) {
             scale_centre_velocities(&m, v, exp(-0.5*dt*(1 + 3/centre_dof)*rate));
             double K = centre_kinetic(&m, v), volume = box[0]*box[1]*box[2];
             rate += 0.5*dt*((2*K + terms.molecular_virial - 3*targetP*volume) + 6*K/centre_dof)/baromass;
@@ -699,23 +882,31 @@ PyObject *advance_molecular(PyObject *self, PyObject *args, PyObject *kwargs) {
     }
     (void)dof;
     timing.total = seconds() - began;
-    result = Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:d,s:K,s:i,s:i,s:d,s:{s:d,s:d,s:d,s:d}}",
+    double numerator[6] = {0, 0, 0, 0, 0, 0};
+    if (size == 1) {
+        /* V P_ab = sum m v_a v_b + sum r_a f_b, for atoms. */
+        kinetic_tensor(&m, v, numerator);
+        for (int k = 0; k < 6; ++k) numerator[k] += terms.tensor[k];
+    }
+    result = Py_BuildValue("{s:d,s:d,s:d,s:d,s:d,s:d,s:K,s:i,s:i,s:d,s:{s:d,s:d,s:d,s:d},s:(dddddd)}",
         "lj", terms.lj, "coulomb", terms.coulomb, "kspace", terms.kspace,
         "virial", terms.virial, "molecular_virial", terms.molecular_virial,
         "pressure_numerator", 2*centre_kinetic(&m, v) + terms.molecular_virial,
         "rng", (unsigned long long)rng, "done", done, "interrupted", interrupted, "rate", rate,
-        "timings", "list", timing.list, "pair", timing.pair, "kspace", timing.kspace, "total", timing.total);
+        "timings", "list", timing.list, "pair", timing.pair, "kspace", timing.kspace, "total", timing.total,
+        "tensor", numerator[0], numerator[1], numerator[2], numerator[3], numerator[4], numerator[5]);
     if (result && ws != &local) {
         /* The mesh may have been chosen again during the call. */
         if (coulomb) for (int k = 0; k < 4; ++k) ws->inputs[12+k] = state[k];
         double *swap = ws->kept_inputs; ws->kept_inputs = ws->inputs; ws->inputs = swap;
         memcpy(ws->x, x, state_bytes); memcpy(ws->u, u, state_bytes); memcpy(ws->f, f, state_bytes);
         memcpy(ws->box, box, sizeof ws->box);
+        memcpy(ws->tilt, m.tilt ? m.tilt : NO_TILT, sizeof ws->tilt);
         ws->terms = terms; ws->current = 1;
     }
 cleanup:
     record_close(&rec);
-    for (int k = 0; k <= BUFFERS; ++k) if (view[k].obj) PyBuffer_Release(&view[k]);
+    for (int k = 0; k < ALL; ++k) if (view[k].obj) PyBuffer_Release(&view[k]);
     free(m.shift);
     release_workspace(&local);
     return result;
@@ -752,7 +943,7 @@ PyObject *pppm_parameters(PyObject *self, PyObject *args) {
     double box[3], qsqsum, qqr2e, cutoff, accuracy, g, estimate;
     int atoms, order, mesh[3];
     if (!PyArg_ParseTuple(args, "(ddd)iddddi", &box[0], &box[1], &box[2], &atoms, &qsqsum, &qqr2e, &cutoff, &accuracy, &order)) return NULL;
-    if (pppm_select(box, atoms, qsqsum, qqr2e, cutoff, accuracy, order, mesh, &g, &estimate) < 0) {
+    if (pppm_select(box, box, atoms, qsqsum, qqr2e, cutoff, accuracy, order, mesh, &g, &estimate) < 0) {
         PyErr_SetString(PyExc_ValueError, "Could not choose PPPM parameters."); return NULL;
     }
     return Py_BuildValue("((iii)dd)", mesh[0], mesh[1], mesh[2], g, estimate);

@@ -64,6 +64,20 @@ gained = after['total_energy']-before['total_energy']
 assert live.positions.shape == (100, 2) and live.box.tolist() == [38., 40.], live.box
 assert after['work'] > 5 and abs(gained-after['work']) < 1e-3*before['kinetic_energy'], (gained, after['work'])
 assert after['wall_impulse_left'] > 0 and after['temperature'] > before['temperature']
+# Sheared quartz: Buckingham terms, PPPM in a tilted box and the anisotropic barostat.
+from fys2160_md import AlphaQuartz, Buckingham
+quartz = AlphaQuartz(cells=(4, 2, 3))
+quartz.strain(yz=0.01)
+bks = MDSimulation(units='metal', charge={'Si': 2.4, 'O': -1.2}, coulomb='pppm', kspace_accuracy=1e-4,
+                   pair_potential={('O', 'O'): Buckingham(A=1388.7730, rho=0.362319, C=175.0),
+                                   ('Si', 'O'): Buckingham(A=18003.7572, rho=0.205205, C=133.5381)},
+                   lj_shift=False, tail=True, ensemble='npt', barostat='anisotropic', temperature=300,
+                   pressure=0.0, timestep=0.001, cutoff=8.0)
+live = bks.start(quartz)
+live.advance(40)
+quartz_now = live.observables
+assert abs(quartz_now['pyz']) > 100 and quartz_now['temperature'] > 100, quartz_now
+assert live.tilt[2] != quartz.tilt[2]  # scaled with the box
 
 json.dumps(dict(pyodide=sys.modules['pyodide'].__version__, python=sys.version.split()[0],
                 numpy=np.__version__, fys2160_md=fys2160_md.__version__,

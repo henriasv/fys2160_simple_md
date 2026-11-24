@@ -203,14 +203,15 @@ A box can be tilted (triclinic), as in LAMMPS: its edges are a = (lx, 0, 0),
 b = (xy, ly, 0) and c = (xz, yz, lz), with the lengths in `state.box` and the
 tilt factors (xy, xz, yz) in `state.tilt`. Each tilt may be at most half the length
 it leans along, and the distance between opposite faces must be more than twice
-the cutoff. Tilted boxes are periodic in three dimensions and hold unbonded atoms.
+the cutoff. Tilted boxes are periodic in three dimensions and hold unbonded atoms,
+with or without charges.
 
 `state.strain(xx=..., yy=..., zz=..., yz=..., xz=..., xy=...)` stretches or shears
 the box and moves every atom with it, so a crystal is deformed rather than cut:
 `xx=0.01` makes x 1% longer, and `xy=0.01` is a shear that leans the y edge by 1%
 of its length along x. Setting `state.tilt` directly instead leaves the atoms where
 they are, as editing the box does. Every run of unbonded atoms without walls
-records the pressure tensor (`pxx`, ..., `pyz`); an elastic constant is the change
+records the pressure tensor (`pxx`, ..., `pyz`), charged atoms included; an elastic constant is the change
 in stress over a small strain, for example `C44 = -(pxy(+e) - pxy(-e))/(2e)` for a
 cubic crystal sheared by `xy = e`.
 
@@ -296,6 +297,23 @@ Both return systems in LAMMPS `real` units with species `"O"` and `"H"`, three
 atoms per molecule (O first). `IceIh` needs N = 8·nx·ny·nz in a nearly cubic box
 and rejects other counts with suggestions. `RigidWater(..., m_distance=...)`
 adds a TIP4P-type M site. See [Water and electrostatics](../water.md).
+
+## Quartz: AlphaQuartz
+
+```python
+from fys2160_md import AlphaQuartz
+
+quartz = AlphaQuartz(cells=(4, 2, 3))     # 432 atoms, 19.7 x 17.0 x 16.2 Å
+```
+
+Alpha-quartz (SiO₂) in LAMMPS `metal` units (Å, g/mol), with species `"Si"` and
+`"O"`. The box is rectangular: `cells` repeats a cell of a × √3·a × c (two
+hexagonal unit cells, 18 atoms) along x, y and z, with the hexagonal a axis along x
+and the c axis along z. The lattice constants `a=4.9134`, `c=5.4052` Å and the atom
+positions are the measured ones at room temperature (Levien, Prewitt and Weidner
+1980). Every Si sits in a tetrahedron of four O at 1.60–1.61 Å, and every O joins two
+tetrahedra. A force field such as [BKS](interactions.md#buckingham-terms-per-pair-of-species)
+relaxes this to its own structure; see [Crystals and elasticity](../crystals.md).
 
 ## Plummer: an isolated gravitational cluster
 

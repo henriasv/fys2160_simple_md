@@ -16,6 +16,7 @@ from .results import Run, write_json
 from .species import parameter, per_atom, charges as _charges
 from .bonds import bond_config
 from .units import units as _units, AVOGADRO_PER_CM3_A3
+from .pairs import pair_table, buckingham_array
 from ._version import __version__
 
 
@@ -130,29 +131,50 @@ class MDSimulation:
                  cutoff=None, G=1., softening=.05, skin=None, friction=None, pressure=None, pressure_time=None,
                  heat_rate=0., seed=87287, output_dir='runs', storage_name='simulation', units='reduced',
                  charge=None, coulomb=None, coulomb_cutoff=None, kspace_accuracy=1e-5, lj_shift=True,
-                 wall_stiffness=1e4):
+                 wall_stiffness=1e4, barostat='isotropic', tail=False):
         if system is not None:
             raise TypeError('MDSimulation holds interactions and controls only. Pass the state to each run: '
                             'run = sim.run(system, steps=...), then continue with sim.run(run.state, ...).')
-        if pair_potential not in ('lj', 'lj96', 'gravity'):
-            raise ValueError('pair_potential must be lj, lj96 or gravity.')
+        # A mapping {("Si", "O"): Buckingham(...), ...} gives a pair term per pair of species.
+        self._pairs = None
+        if not isinstance(pair_potential, str):
+            self._pairs = pair_table(pair_potential)
+            pair_potential = 'buckingham'
+            if not (isinstance(epsilon, (int, float)) and epsilon == 1. and isinstance(sigma, (int, float)) and sigma == 1.):
+                raise ValueError('Buckingham terms take A, rho and C for each pair; leave out epsilon and sigma.')
+        elif pair_potential not in ('lj', 'lj96', 'gravity'):
+            raise ValueError('pair_potential must be lj, lj96, gravity, or a mapping from pairs of species to '
+                             'Buckingham terms, such as {("Si", "O"): Buckingham(A=..., rho=..., C=...)}.')
         self._units = _units(units)
         if (charge is None) != (coulomb is None):
             raise ValueError('Charges need coulomb="pppm" (long-range electrostatics), and coulomb needs charge.')
         if coulomb not in (None, 'pppm'):
             raise ValueError('coulomb must be "pppm".')
-        real = self._units.name == 'real'
-        if (real or charge is not None) and pair_potential != 'lj':
-            raise ValueError('Water, charges and real units use the 12-6 Lennard-Jones potential (pair_potential="lj").')
+        physical = self._units.name != 'reduced'
+        if (physical or charge is not None) and pair_potential not in ('lj', 'buckingham'):
+            raise ValueError('Charges and real or metal units use the 12-6 Lennard-Jones potential (pair_potential="lj") '
+                             'or Buckingham terms.')
         if not isinstance(lj_shift, bool):
             raise TypeError('lj_shift must be True or False.')
+        if not isinstance(tail, bool):
+            raise TypeError('tail must be True or False.')
+        if tail and lj_shift:
+            raise ValueError('tail=True adds the pairs beyond the cutoff to the unshifted potential; '
+                             'use it with lj_shift=False (as LAMMPS does).')
+        self._tail = tail
         if charge is None and coulomb_cutoff is not None:
             raise ValueError('coulomb_cutoff applies only to charged systems.')
-        if real:
+        if physical:
             missing = [name for name, value in (('temperature', temperature), ('timestep', timestep), ('cutoff', cutoff)) if value is None]
             if missing:
-                raise ValueError(f'Real units need explicit {", ".join(missing)} (K, fs, Å).')
-        defaults = dict(skin=2., friction=.005, pressure=None, pressure_time=1000.) if real else dict(temperature=2., skin=.4, friction=1., pressure=.01, pressure_time=5.)
+                time_unit = self._units.time
+                raise ValueError(f'{self._units.name.capitalize()} units need explicit {", ".join(missing)} (K, {time_unit}, Å).')
+        if self._units.name == 'real':
+            defaults = dict(skin=2., friction=.005, pressure=None, pressure_time=1000.)
+        elif self._units.name == 'metal':  # the same times in ps: friction 5/ps, pressure_time 1 ps
+            defaults = dict(skin=2., friction=5., pressure=None, pressure_time=1.)
+        else:
+            defaults = dict(temperature=2., skin=.4, friction=1., pressure=.01, pressure_time=5.)
         temperature = defaults['temperature'] if temperature is None else temperature
         if pair_potential == 'gravity':
             if cutoff is not None:
@@ -165,7 +187,7 @@ class MDSimulation:
             raise TypeError('exclude_bonded_pairs must be True or False.')
         if mixing_rule != 'lorentz-berthelot':
             raise ValueError('mixing_rule must be "lorentz-berthelot".')
-        zero = real or charge is not None
+        zero = physical or charge is not None or self._pairs is not None
         self._epsilon = _species_values(epsilon, 'epsilon', zero)
         self._sigma = _species_values(sigma, 'sigma', zero)
         self._charge = None if charge is None else _charges(charge, tuple(charge) if isinstance(charge, dict) else ())
@@ -182,7 +204,8 @@ class MDSimulation:
         self.output_dir = Path(output_dir).expanduser()
         self.storage_name = _storage_name(storage_name)
         self._defaults = dict(ensemble=ensemble, timestep=timestep, temperature=temperature,
-                              pressure=defaults['pressure'] if pressure is None else pressure, heat_rate=heat_rate)
+                              pressure=defaults['pressure'] if pressure is None else pressure, heat_rate=heat_rate,
+                              barostat=barostat)
         if charge is not None:
             self._defaults.update(coulomb_cutoff=self.cutoff if coulomb_cutoff is None else coulomb_cutoff,
                                   kspace_accuracy=kspace_accuracy)
@@ -213,6 +236,11 @@ class MDSimulation:
         return self._lj_shift
 
     @property
+    def tail(self):
+        """True adds the energy and pressure of pairs beyond the cutoff (a uniform density there)."""
+        return self._tail
+
+    @property
     def epsilon(self):
         return self._epsilon.copy() if isinstance(self._epsilon, dict) else self._epsilon
 
@@ -226,7 +254,13 @@ class MDSimulation:
 
     @property
     def pair_potential(self):
+        """"lj", "lj96", "gravity", or "buckingham" for a table of pair terms (see ``pairs``)."""
         return self._pair_potential
+
+    @property
+    def pairs(self):
+        """The Buckingham terms for each pair of species, or None."""
+        return None if self._pairs is None else dict(self._pairs)
 
     @property
     def exclude_bonded_pairs(self):
@@ -238,7 +272,7 @@ class MDSimulation:
         return self._defaults.copy()
 
     def _engine(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
-                heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None):
+                heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None, barostat=None):
         """Working copy of state for one run, with this run's controls resolved."""
         if not isinstance(state, System):
             raise TypeError('Pass a System as the state, such as FCC(N=500, rho=0.1) or run.state.')
@@ -246,7 +280,8 @@ class MDSimulation:
             raise ValueError('coulomb_cutoff and kspace_accuracy apply only to charged systems.')
         settings = self.settings
         for key, value in dict(timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
-                               heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy).items():
+                               heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy,
+                               barostat=barostat).items():
             if value is not None:
                 settings[key] = value
         if state.walls or piston is not None:
@@ -254,7 +289,8 @@ class MDSimulation:
         return _Engine(self, state, settings, None if seed is None else _seed(seed))
 
     def start(self, state, *, timestep=None, ensemble=None, temperature=None, pressure=None,
-              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None, measure=None):
+              heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, seed=None, piston=None, measure=None,
+              barostat=None):
         """Start a run of a copy of ``state`` in memory, and return it as a LiveRun.
 
         Nothing is written to disk. ``live.advance(steps)`` takes steps;
@@ -271,13 +307,13 @@ class MDSimulation:
         measure = _measurements(measure)
         return LiveRun(self._engine(state, timestep=timestep, ensemble=ensemble, temperature=temperature,
                                     pressure=pressure, heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff,
-                                    kspace_accuracy=kspace_accuracy, seed=seed, piston=piston), measure)
+                                    kspace_accuracy=kspace_accuracy, seed=seed, piston=piston, barostat=barostat), measure)
 
     @_legacy_output_names
     def run(self, state, steps=1000, *, timestep=None, ensemble=None, temperature=None, pressure=None,
             heat_rate=None, coulomb_cutoff=None, kspace_accuracy=None, deform=None, seed=None, piston=None,
             thermo_every=100, trajectory_every=500, show=False, max_fps=None, frame_every=100, storage_name=None,
-            measure=None):
+            measure=None, barostat=None):
         """Evolve a copy of ``state`` and save the run; the final state is ``run.state``.
 
         Controls given here apply to this run only; omitted ones take the values
@@ -299,6 +335,10 @@ class MDSimulation:
         again when these settings change or the box has changed by more than 5%.
         ``deform=s`` (nve/nvt only) scales every box length linearly in time to s
         times its starting value, moving whole molecules with their centres of mass.
+        Under pressure control (nph, npt), ``barostat="anisotropic"`` lets the three
+        box lengths change separately, each driven by its own diagonal component of the
+        pressure tensor (atoms in real or metal units, with charges or Buckingham
+        terms); "isotropic" (the default) keeps the shape of the box.
 
         In a box with walls, the thermo table has for each wall the force on it at
         that step (``wall_force_right``, positive outwards) and the momentum it has
@@ -328,12 +368,14 @@ class MDSimulation:
                 raise ValueError('max_fps is a live-view option; set show=True.')
         advancing = self.start(state, timestep=timestep, ensemble=ensemble, temperature=temperature, pressure=pressure,
                                heat_rate=heat_rate, coulomb_cutoff=coulomb_cutoff, kspace_accuracy=kspace_accuracy, seed=seed,
-                               piston=piston, measure=measure)
+                               piston=piston, measure=measure, barostat=barostat)
         engine = advancing._engine
         if deform is not None:
             deform = _positive(deform, 'deform')
             if engine.kind != 'molecular':
-                raise ValueError('deform is available for water, charges and real units.')
+                raise ValueError('deform is available for water, charges and real or metal units.')
+            if engine._tilt.any():
+                raise ValueError('deform scales a rectangular box; this one is tilted.')
             if engine.settings['ensemble'] not in ('nve', 'nvt'):
                 raise ValueError('deform needs ensemble="nve" or "nvt" (no barostat).')
         live = None
@@ -550,23 +592,25 @@ class LiveRun:
         if self._advance(_integer(steps, 'steps', 0)):
             raise KeyboardInterrupt
 
-    def set(self, *, timestep=None, ensemble=None, temperature=None, pressure=None, heat_rate=None, piston=None):
+    def set(self, *, timestep=None, ensemble=None, temperature=None, pressure=None, heat_rate=None, piston=None,
+            barostat=None):
         """Change controls for the steps that follow; omitted ones keep their values.
 
         The effect is that of a new run started from ``live.state`` with these
         controls: a new ``temperature`` or ``pressure`` is the target from the
         next step (a step change, not a ramp), and velocities are not reset.
         ``piston=Piston("right", to=50, speed=0.05)`` sets that wall moving from
-        where it is; it stops by itself at ``to``.
+        where it is; it stops by itself at ``to``. ``barostat`` is "isotropic" or
+        "anisotropic", as in ``run``.
         """
         self._check()
         self._engine._set(timestep=timestep, ensemble=ensemble, temperature=temperature,
-                          pressure=pressure, heat_rate=heat_rate, piston=piston)
+                          pressure=pressure, heat_rate=heat_rate, piston=piston, barostat=barostat)
 
     @property
     def settings(self):
         """The controls now in force (timestep, ensemble, temperature, pressure,
-        heat_rate, and piston for a system with walls)."""
+        heat_rate, barostat, and piston for a system with walls)."""
         return self._engine.settings.copy()
 
     @property
@@ -709,6 +753,8 @@ def _check_controls(config, sim, kind=None, model=None):
         config['kspace_accuracy'] = _positive(config['kspace_accuracy'], 'kspace_accuracy')
         if config['kspace_accuracy'] >= 1:
             raise ValueError('kspace_accuracy is a relative force accuracy, such as 1e-5.')
+    if config.get('barostat', 'isotropic') not in ('isotropic', 'anisotropic'):
+        raise ValueError('barostat must be "isotropic" or "anisotropic".')
     config['heat_rate'] = float(config['heat_rate'])
     if not np.isfinite(config['heat_rate']):
         raise ValueError('heat_rate must be finite (total energy per time).')
@@ -731,15 +777,20 @@ class _Engine:
             raise ValueError('This course solver supports at most 20000 atoms.')
         if system.units != self._units.name:
             raise ValueError(f'This simulation uses units="{self._units.name}", but the state is in "{system.units}" units.')
-        real = self._units.name == 'real'
-        self.kind = 'molecular' if (system.model == 'water-rigid' or real or sim._charge is not None) else 'pair'
+        physical = self._units.name != 'reduced'
+        self.kind = 'molecular' if (system.model == 'water-rigid' or physical or sim._charge is not None or sim._pairs is not None) else 'pair'
         if self.kind == 'molecular':
-            if sim.pair_potential != 'lj':
-                raise ValueError('Water, charges and real units use the 12-6 Lennard-Jones potential (pair_potential="lj").')
+            if sim.pair_potential not in ('lj', 'buckingham'):
+                raise ValueError('Water, charges and real or metal units use the 12-6 Lennard-Jones potential '
+                                 '(pair_potential="lj") or Buckingham terms.')
+            if system.model == 'water-rigid' and sim.pair_potential == 'buckingham':
+                raise ValueError('Buckingham terms are for atoms; water uses the Lennard-Jones potential on oxygen.')
             if system.model.startswith('diatomic'):
                 raise ValueError('Diatomic molecules use reduced units without charges.')
+        elif sim.tail:
+            raise ValueError('tail=True is available for water, charges, Buckingham terms and real or metal units.')
         elif not sim.lj_shift:
-            raise ValueError('lj_shift=False is available for water, charges and real units.')
+            raise ValueError('lj_shift=False is available for water, charges and real or metal units.')
         if sim.pair_potential == 'gravity':
             if system.boundary != 'open' or system.model != 'atomic':
                 raise ValueError('Gravity requires an unbonded System with boundary="open".')
@@ -812,8 +863,14 @@ class _Engine:
         self._advance(0)
 
     def _barostat(self, rate):
-        """Barostat rate and inertia for the controls now in force."""
-        self._rate = rate if self.settings['ensemble'] in ('nph', 'npt') else 0.
+        """Barostat rate (one per axis when anisotropic) and inertia for the controls now in force."""
+        controlled = self.settings['ensemble'] in ('nph', 'npt')
+        if self.settings['barostat'] == 'anisotropic':
+            self._rates = np.array(np.broadcast_to(rate, 3), dtype=float) if controlled else np.zeros(3)
+            self._rate = 0.
+        else:
+            self._rates = None
+            self._rate = (rate if np.ndim(rate) == 0 else float(np.mean(rate))) if controlled else 0.
         self._baromass = (self.dof+3)*max(self.settings['temperature'], 1e-6)*self.pressure_time**2
         if self.kind == 'molecular':
             # Barostat inertia from centre-of-mass degrees of freedom (3N-3)+3.
@@ -824,6 +881,9 @@ class _Engine:
         settings = _check_controls(settings, self.sim, self.kind, self.model)
         if (self.dimension == 2 or self._system.walls) and settings['ensemble'] in ('nph', 'npt'):
             raise ValueError('Pressure control needs a three-dimensional periodic box; use nve or nvt.')
+        if settings['barostat'] == 'anisotropic' and not (self.kind == 'molecular' and self.model == 'atomic'):
+            raise ValueError('barostat="anisotropic" is available for atoms with charges or Buckingham terms, or in real '
+                             'or metal units; use "isotropic" here.')
         external_terms(self._system, self.sim.wall_stiffness, settings.get('piston'))
         return settings
 
@@ -833,7 +893,7 @@ class _Engine:
         settings.update({key: value for key, value in controls.items() if value is not None})
         self.settings = self._controls(settings)
         self._walls, self._external = external_terms(self._system, self.sim.wall_stiffness, self.settings.get('piston'))
-        self._barostat(self._rate)
+        self._barostat(self._rate if self._rates is None else self._rates)
 
     def _prepare_molecular(self):
         """Type tables, per-atom charges and rigid-water geometry for the native solver."""
@@ -849,6 +909,12 @@ class _Engine:
         # Lorentz-Berthelot mixing; species with epsilon=0 have no LJ interactions.
         self._epsilon_table = np.ascontiguousarray(np.sqrt(np.outer(eps, eps)))
         self._sigma_table = np.ascontiguousarray(.5*(sig[:, None]+sig[None, :]))
+        self._buckingham = None
+        if self.sim._pairs is not None:
+            # Buckingham terms instead: pairs left out do not interact at short range.
+            self._buckingham = buckingham_array(self.sim._pairs, names)
+            self._epsilon_table = np.zeros((len(names), len(names)))
+            self._sigma_table = np.ones((len(names), len(names)))
         q = per_atom(self._charge, system._species) if self._charge is not None else np.zeros(len(system._species))
         if self._charge is not None and abs(q.sum()) > 1e-8*max(1., np.abs(q).sum()):
             raise ValueError(f'The total charge must be zero; these charges sum to {q.sum():.6g} e.')
@@ -960,7 +1026,9 @@ class _Engine:
             barostat_mass=self._baromass, rate=self._rate, mvv2e=U.mvv2e, qqr2e=U.qqr2e,
             molecule_size=3 if self.model == 'water-rigid' else 1, constraints=self._constraints,
             alpha=self._alpha, lj_shift=self.sim.lj_shift, coulomb=int(self._charge is not None),
-            accuracy=c.get('kspace_accuracy', 1e-5), order=5, workspace=self._workspace, record=record)
+            accuracy=c.get('kspace_accuracy', 1e-5), order=5, workspace=self._workspace, record=record,
+            tilt=self._tilt, buckingham=self._buckingham, rates=self._rates if controlled else None,
+            tail=self.sim.tail)
         self._terms = result
         self._potential = result['lj'] + result['coulomb'] + result['kspace']
         self._virial = result['virial']
@@ -998,17 +1066,24 @@ class _Engine:
         controlled = self.settings['ensemble'] in ('nph','npt')
         H = E+self.settings['pressure']/U.pressure*V if controlled else E+P_internal*V
         B = .5*self._baromass*self._rate**2 if controlled else 0.
+        if controlled and self._rates is not None:
+            B = .5*self._baromass/3*float(np.sum(self._rates**2))
         values = dict(step=self.step, time=self.time, temperature=T, pressure=P,
                       kinetic_energy=K, potential_energy=self._potential,
                       total_energy=E, volume=V, density=self.particles/V,
                       atom_density=len(self._x)/V, compressibility_factor=P_internal*V/(self.particles*T*U.boltzmann) if T else float('nan'),
                       enthalpy=H, barostat_energy=B, extended_enthalpy=H+B,
                       heat_added=self.heat_added)
-        if U.name == 'real':
+        if U.name in ('real', 'metal'):
             values['mass_density'] = float(self._mass.sum())/(AVOGADRO_PER_CM3_A3*V)
-        if self.kind == 'molecular' and self._charge is not None:
-            values['lj_energy'] = self._terms['lj']
-            values['coulomb_energy'] = self._terms['coulomb']+self._terms['kspace']
+        if self.kind == 'molecular' and (self._charge is not None or self._buckingham is not None):
+            values['buckingham_energy' if self._buckingham is not None else 'lj_energy'] = self._terms['lj']
+            if self._charge is not None:
+                values['coulomb_energy'] = self._terms['coulomb']+self._terms['kspace']
+        if self.kind == 'molecular' and self.model == 'atomic':
+            # The pressure tensor: (sum m v_a v_b + sum r_a f_b)/V, from the solver's last step.
+            for k, name in enumerate(('xx', 'yy', 'zz', 'xy', 'xz', 'yz')):
+                values[f'p{name}'] = self._terms['tensor'][k]/V*U.pressure
         if self.kind == 'pair' and self.model == 'atomic' and not self._walls:
             # The pressure tensor (stress with the opposite sign), from a pass over the pairs.
             self._advance(0, stress=self._stress)
@@ -1032,7 +1107,8 @@ class _Engine:
         state._time, state._step = self.time, self.step
         state._rng = self._rng
         state._heat = self.heat_added
-        state._rate = self._rate if self.settings['ensemble'] in ('nph', 'npt') else 0.
+        controlled = self.settings['ensemble'] in ('nph', 'npt')
+        state._rate = (self._rate if self._rates is None else self._rates.copy()) if controlled else 0.
         if self._walls:
             state._wall_sums = self._wall_sums[:, 1:].copy()
         if self.kind == 'molecular' and self._charge is not None:
@@ -1045,10 +1121,11 @@ class _Engine:
         if 'piston' in settings:
             settings['piston'] = piston_config(settings['piston'])
         return dict(model=self.model, bond=bond_config(system.bond), units=self.units,
-                    charge=sim.charge, coulomb=sim.coulomb, lj_shift=sim.lj_shift,
+                    charge=sim.charge, coulomb=sim.coulomb, lj_shift=sim.lj_shift, tail=sim.tail,
                     dimension=self.dimension, walls=list(system.walls), wall_stiffness=sim.wall_stiffness,
                     boundary=system.boundary, G=sim.G, softening=sim.softening,
                     pair_potential=sim.pair_potential, epsilon=sim.epsilon, sigma=sim.sigma, mixing_rule=sim.mixing_rule,
+                    **({'pairs': [[a, b, t.A, t.rho, t.C] for (a, b), t in sim._pairs.items()]} if sim._pairs else {}),
                     exclude_bonded_pairs=sim.exclude_bonded_pairs, particles=self.particles,
                     density=system.rho if system.boundary != "open" else None, seed=sim.seed,
                     cutoff=self.cutoff, skin=self.skin, friction=self.friction,

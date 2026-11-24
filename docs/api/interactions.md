@@ -48,6 +48,47 @@ result = sim.run(system, steps=1000)
 Here cutoff is 2.5 times the chosen sigma. A stronger interaction or smaller
 length scale may require a shorter timestep. Verify energy conservation in NVE.
 
+## Buckingham terms per pair of species
+
+For ionic crystals such as quartz the pair potential is given for each pair of
+species, as a dictionary of `Buckingham` terms:
+
+`U(r) = A exp(−r/ρ) − C/r⁶`
+
+```python
+from fys2160_md import AlphaQuartz, Buckingham, MDSimulation
+
+# BKS silica: van Beest, Kramer and van Santen, Phys. Rev. Lett. 64, 1955 (1990).
+bks = {
+    ("O", "O"): Buckingham(A=1388.7730, rho=0.362319, C=175.0),
+    ("Si", "O"): Buckingham(A=18003.7572, rho=0.205205, C=133.5381),
+}
+sim = MDSimulation(
+    units="metal",                    # Å, ps, eV, K, bar
+    pair_potential=bks,
+    charge={"Si": 2.4, "O": -1.2},
+    coulomb="pppm",
+    ensemble="nvt",
+    temperature=300,
+    timestep=0.001,                   # 1 fs
+    cutoff=8.0,
+)
+```
+
+A is an energy, ρ a length and C an energy times length⁶, in the simulation's
+units (eV and Å in metal units). The order of the two species in a key does not
+matter. **Pairs you leave out do not interact at short range**: in BKS, two
+silicon atoms only repel through their charges. Every named species must be in the
+state. The energy is shifted to zero at the cutoff, as for Lennard-Jones
+(`lj_shift=True`).
+
+The repulsion `A exp(−r/ρ)` stays finite as r goes to 0, so the attraction `−C/r⁶`
+wins at short distances: the potential has a maximum, `Buckingham(...).barrier`
+(1.10 Å for Si–O in BKS), and falls without bound inside it. Two atoms that get
+that close have fallen into an unphysical well, which happens at high
+temperatures or with too long a timestep. The run then stops with a message
+instead of producing nonsense. `term.energy(r)` gives U(r) to plot.
+
 ## Bond choices
 
 ```python
