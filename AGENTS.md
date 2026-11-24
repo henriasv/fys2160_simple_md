@@ -519,3 +519,10 @@ mass-weighted velocity spectrum has bands at 15-18, 22-27, 33 and 37 THz; C_V/3N
 300 K: spectrum 0.54, Debye 0.85, measured C_p 44.6 J/(mol K) -> 0.60. About 3 minutes.
 `state.draw()` and `run.draw()` use element display sizes (O 1.2, Si 0.9 Å) in metal
 units, as the player does.
+
+2026-11-24 (0.6.1): `run` flushed thermo.csv after every row, which made `thermo_every=1`
+slow on network and synced folders (a JupyterHub home, Google Drive, OneDrive). It now
+flushes the header and first row at once, then at most once a second, and the file is
+complete when the run ends. Locally a flush costs about 3 µs, so the local gain is small
+(20 000 steps with a row per step: 1.44 -> 1.36 s); the rest of a row's cost (about 35 µs)
+is writing the CSV row and reading the observables. `test_thermo_is_on_disk_during_the_run`.
