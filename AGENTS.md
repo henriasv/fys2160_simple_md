@@ -526,3 +526,13 @@ flushes the header and first row at once, then at most once a second, and the fi
 complete when the run ends. Locally a flush costs about 3 µs, so the local gain is small
 (20 000 steps with a row per step: 1.44 -> 1.36 s); the rest of a row's cost (about 35 µs)
 is writing the CSV row and reading the observables. `test_thermo_is_on_disk_during_the_run`.
+
+2026-11-24 (0.6.2): `draw` clipped a box edge to half its width wherever no atom reached
+past it, since the limits then sat on the edge's line (a walled box made twice as long
+showed faint right and bottom edges). `draw_atoms` now leaves room for the whole line
+beyond the edges, in points converted through the Axes' size (`_data_per_inch`): one line
+width (0.8) in 3D; in 2D (line + frame width)/2, so a wall touches the axes frame instead
+of half hiding under it. The 3D edges have projecting caps, so face-on corners are square.
+Chosen over `clip_on=False`, which would draw the box over neighbouring plots after a zoom
+with `set_xlim`. `test_box_edges_are_not_clipped_where_no_atom_reaches_them` measures the
+overhang in pixels (0.56 px before, for 0.8-point lines at 100 dpi).

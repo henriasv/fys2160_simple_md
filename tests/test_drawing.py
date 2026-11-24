@@ -19,6 +19,24 @@ def balls(ax):
     return collection
 
 
+def overhang(ax):
+    """How far, in pixels, the box edges with their line width reach beyond the
+    Axes (negative: they lie wholly inside, so nothing of them is clipped)."""
+    ax.figure.canvas.draw()
+    window = ax.get_window_extent()
+    lines = [(c.get_segments(), c.get_linewidths()[0]) for c in ax.collections
+             if isinstance(c, LineCollection) and c.get_zorder() in (1, 4)]  # the box, not bonds
+    lines += [([line.get_xydata()], line.get_linewidth()) for line in ax.lines if line.get_zorder() == 1]
+    assert lines, 'no box edges drawn'
+    reach = []
+    for segments, width in lines:
+        for segment in segments:
+            p = ax.transData.transform(segment)
+            reach.append(width*ax.figure.dpi/72/2+max(window.x0-p[:, 0].min(), p[:, 0].max()-window.x1,
+                                                      window.y0-p[:, 1].min(), p[:, 1].max()-window.y1))
+    return max(reach)
+
+
 class Draw(unittest.TestCase):
     def tearDown(self):
         plt.close('all')
@@ -61,6 +79,29 @@ class Draw(unittest.TestCase):
         self.assertGreaterEqual(x1, 30)
         styles = sorted(line.get_linestyle() for line in ax.lines)
         self.assertEqual(styles.count('-'), 2)  # the two walls; the periodic sides are dashed
+
+    def test_box_edges_are_not_clipped_where_no_atom_reaches_them(self):
+        # A box made twice as long: the atoms fill only its left half, so the edges
+        # alone set the limits, and a limit on an edge would clip half its line.
+        walls = FCC(N=108, rho=.1, boundary='walls')
+        walls.box[0] *= 2
+        tilted = FCC(N=108, rho=.8)
+        tilted.strain(xy=.3, xz=.2, yz=.1)
+        flat = Random(N=50, box=(30, 20), boundary='walls', min_distance=1.0, seed=1)
+        flat.box[0] *= 2
+        _, (_, given) = plt.subplots(1, 2, figsize=(8, 3))
+        pictures = {
+            'front, orthographic': walls.draw(view='front', projection='orthographic'),
+            'angled, perspective': walls.draw(),
+            'angled, orthographic': walls.draw(view='angled', projection='orthographic'),
+            'tilted, perspective': tilted.draw(),
+            'tilted, orthographic': tilted.draw(projection='orthographic'),
+            'flat with walls': flat.draw(),
+            'in a given Axes': walls.draw(ax=given, view='top', projection='orthographic'),
+        }
+        for name, ax in pictures.items():
+            with self.subTest(name):
+                self.assertLess(overhang(ax), 0)
 
     def test_water_molecules_are_drawn_whole(self):
         ice = IceIh(N=96, density=.92, molecule='water', bond=RigidWater(oh_length=1.0, hoh_angle=109.47), seed=1)

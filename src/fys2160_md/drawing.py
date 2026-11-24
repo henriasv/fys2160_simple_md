@@ -83,6 +83,14 @@ def _arrows(ax, R, background):
         ax.text(*label, name, transform=at, ha='center', va='center', fontsize=8, color='0.25', zorder=6)
 
 
+def _data_per_inch(ax, span):
+    """Data units per inch of an equal-aspect Axes showing ``span`` (x, y): the Axes
+    shrinks along one direction until both fit, so the larger ratio holds."""
+    where = ax.get_position()
+    inches = where.width*ax.figure.get_figwidth(), where.height*ax.figure.get_figheight()
+    return max(span[0]/inches[0], span[1]/inches[1])
+
+
 def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False, False), framed=True,
                ax=None, view=None, projection='perspective', arrows=True, background='white', tilt=None):
     """Draw atoms into ``ax`` (a new figure if None) and return the Axes.
@@ -146,8 +154,8 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
                     b = a ^ (1 << (2-d))
                     if a < b:
                         (front if q[a, 2]+q[b, 2] > 1e-9 else back).append([q2[a], q2[b]])
-            ax.add_collection(LineCollection(back, colors='0.65', linewidths=.8, zorder=1))
-            ax.add_collection(LineCollection(front, colors='0.45', linewidths=.8, zorder=4))
+            ax.add_collection(LineCollection(back, colors='0.65', linewidths=.8, zorder=1, capstyle='projecting'))
+            ax.add_collection(LineCollection(front, colors='0.45', linewidths=.8, zorder=4, capstyle='projecting'))
             edges = q2
     if len(bonds):
         ax.add_collection(LineCollection([[xy[i], xy[j]] for i, j in bonds], colors='0.55',
@@ -168,10 +176,16 @@ def draw_atoms(positions, box, species, radii, *, bonds=(), walled=(False, False
                                         offset_transform=ax.transData, facecolors=colours, linewidths=0, zorder=3))
     pad = 1.2*r.max()
     lo, hi = xy.min(axis=0)-pad, xy.max(axis=0)+pad
+    if D == 2 and framed:
+        edges = np.array([[0., 0.], box])
     if len(edges):
-        lo, hi = np.minimum(lo, edges.min(axis=0)), np.maximum(hi, edges.max(axis=0))
-    elif D == 2 and framed:
-        lo, hi = np.minimum(lo, 0), np.maximum(hi, box)
+        # An edge on the limit would lose the half of its line outside the Axes. Keep
+        # room for the whole line: one line width in 3D, and in 2D enough for the line
+        # (2 points for walls, else 0.8) to lie just inside the axes frame, touching it.
+        width = 2 if D == 2 and any(walled[:2]) else .8
+        points = (width+ax.spines['left'].get_linewidth())/2 if D == 2 else width
+        room = points/72*_data_per_inch(ax, np.maximum(hi, edges.max(axis=0))-np.minimum(lo, edges.min(axis=0)))
+        lo, hi = np.minimum(lo, edges.min(axis=0)-room), np.maximum(hi, edges.max(axis=0)+room)
     ax.set_xlim(lo[0], hi[0])
     ax.set_ylim(lo[1], hi[1])
     ax.set_aspect('equal')
