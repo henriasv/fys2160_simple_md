@@ -56,6 +56,24 @@ class Measure(unittest.TestCase):
         np.testing.assert_array_equal(live.measured_steps, run.measured_steps)
         self.assertEqual(live.observables['N_left'], np.sum(live.positions[:, 0] < live.box[0]/2))
 
+    def test_thermo_is_on_disk_during_the_run(self):
+        # Rows are flushed at most once a second, but the header and the first row at once.
+        path = f'{self.directory.name}/readable/thermo.csv'
+        seen = []
+
+        def lines_on_disk(result):
+            try:
+                with open(path) as stream:
+                    seen.append(len(stream.readlines()))
+            except FileNotFoundError:  # the starting state is measured before the file is made
+                seen.append(None)
+            return np.zeros(len(result.steps))
+
+        run = self.sim.run(flat_gas(), steps=50, thermo_every=1, trajectory_every=None,
+                           storage_name='readable', measure={'lines': lines_on_disk})
+        self.assertEqual(seen[1:3], [2, 2])
+        self.assertEqual(len(run.thermo), 51)
+
     def test_every_attribute_and_a_changing_box(self):
         def length(result):
             self.assertEqual(result.positions.shape, result.velocities.shape)

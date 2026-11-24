@@ -423,6 +423,8 @@ class MDSimulation:
                 writer = csv.DictWriter(stream, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerow(row)
+                stream.flush()
+                flushed = time.monotonic()
                 last_sample = engine.step
                 if trajectory_every is not None:
                     frame()
@@ -438,7 +440,11 @@ class MDSimulation:
                     final = elapsed == steps or interrupted
                     if elapsed%thermo_every == 0 or final:
                         writer.writerow(advancing._row())
-                        stream.flush()
+                        # Readable during a long run, but at most one disk write a second:
+                        # a flush per row is slow on network and synced folders.
+                        if time.monotonic()-flushed >= 1:
+                            stream.flush()
+                            flushed = time.monotonic()
                         last_sample = engine.step
                     if trajectory_every is not None and (elapsed%trajectory_every == 0 or final):
                         frame()
